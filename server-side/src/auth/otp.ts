@@ -16,7 +16,6 @@ export function generateOTP(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
 }
 
-
 /** Timestamp to stamp onto `StagedUser.expiresAt` when creating the row. */
 export function otpExpiresAt(): Date {
   return new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
