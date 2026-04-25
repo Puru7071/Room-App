@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// All DateTime columns are stored as Postgres `timestamptz(3)` (TIMESTAMP WITH
+// TIME ZONE, millisecond precision). Prisma's default for PostgreSQL is plain
+// `timestamp(3)` which has no timezone metadata; switching to timestamptz
+// makes the UTC contract explicit at the database layer so a future tool that
+// queries the DB outside this app (psql, Studio, BI dashboards) can't
+// misinterpret the values as local time.
+
+model StagedUser {
+  userId        String   @id @default(uuid())
+  email         String   @unique
+  username      String   @unique
+  otp           String
+  profilePicUrl String?
+  password      String
+  expiresAt     DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+model User {
+  userId        String   @id @default(uuid())
+  email         String   @unique
+  username      String   @unique
+  profilePicUrl String?
+  password      String
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+}

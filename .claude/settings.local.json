@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /tmp/home.html -w \"HOME: %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /tmp/room.html -w \"ROOM: %{http_code}\\\\n\" http://localhost:3001/room)",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /tmp/home2.html -w \"%{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /tmp/home3.html -w \"%{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s -o /tmp/room2.html -w \"%{http_code}\\\\n\" http://localhost:3001/room)",
+      "Bash(node -e \"console.log\\(require\\('crypto'\\).randomBytes\\(48\\).toString\\('base64url'\\)\\)\")",
+      "Bash(curl -s -w \"\\\\nHTTP %{http_code}\\\\n\" http://localhost:9900/health)",
+      "Bash(npm uninstall *)",
+      "Bash(npx prisma *)",
+      "Bash(yes)",
+      "Bash(curl -s -o /dev/null -w \"/room %{http_code}\\\\n\" http://localhost:3001/room)",
+      "Read(//Users/purubhargava/Desktop/Projects/instagram Clone/server-side/config/**)",
+      "Read(//Users/purubhargava/Desktop/Projects/instagram Clone/server-side/views/mailer/**)"
+    ]
+  }
+}
