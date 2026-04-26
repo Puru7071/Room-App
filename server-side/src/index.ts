@@ -1,18 +1,28 @@
 /**
  * Server entry point.
  *
- * Boots an Express app that will host HTTP endpoints (auth, rooms, etc.) and,
- * later, socket.io for realtime sync. Runs as a long-lived process — not
- * serverless — because sockets need a persistent connection.
+ * Boots an Express app that hosts HTTP endpoints (auth, rooms) and a
+ * Socket.IO server for realtime sync (join-request notifications, etc.).
+ * Runs as a long-lived process — not serverless — because sockets need a
+ * persistent connection.
+ *
+ * Architecture note: Socket.IO needs the underlying `http.Server` (not
+ * the Express `app` object), so we explicitly wrap the app and call
+ * `.listen()` on the server. Same port, same CORS origin — both
+ * transports share infrastructure.
  */
 
 // Loads variables from `.env` into `process.env`. Must run before any module
 // that reads env values (Prisma client, mailer transporter, JWT signer, etc.).
 import "dotenv/config";
+import http from "node:http";
 import express from "express";
 import cors from "cors";
 import { authRouter } from "./auth/router";
 import { startStagedUserCleanupCron } from "./auth/cleanupCron";
+import { roomsRouter } from "./rooms/router";
+import { startStaleRoomCleanupCron } from "./rooms/cleanupCron";
+import { attachWsServer } from "./ws";
 
 /** HTTP port. Defaults to 9900 for local dev; overridable via `PORT` env var. */
 const PORT = Number(process.env.PORT ?? 9900);
@@ -51,6 +61,17 @@ app.get("/health", (_req, res) => {
 // inside the router so only auth traffic is throttled, not /health etc.
 app.use("/auth", authRouter);
 
-app.listen(PORT, () => {
+// Room routes: /rooms/create (more to follow). Every route under here is
+// guarded by requireAuth — see rooms/router.ts.
+app.use("/rooms", roomsRouter);
+
+// Wrap Express in an http.Server so Socket.IO can attach to the same
+// listener. Both transports share `PORT` and `corsOrigin`.
+const httpServer = http.createServer(app);
+attachWsServer(httpServer, corsOrigin);
+
+httpServer.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}`);
+  startStagedUserCleanupCron();
+  startStaleRoomCleanupCron();
 });

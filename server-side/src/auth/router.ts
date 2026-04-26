@@ -1,16 +1,16 @@
 /**
- * /auth router — assembles the signup + verify-otp routes plus their
- * per-route rate limiters.
+ * /auth router — assembles the signup, verify-otp, and login routes plus
+ * their per-route rate limiters.
  *
  * Rate limits are deliberately tighter on signup (triggers an email send,
  * which is expensive + abusable) than on verify-otp (cheap DB read).
- * The verify cap is still tight enough to block brute-forcing a 6-digit code:
- * 10 per minute × 2-minute expiry = 20 attempts to guess 1 of 10⁶ — trivial
- * to bound statistically.
+ * Login is throttled at the same shape as verify-otp — the bcrypt.compare
+ * is cheap on a per-call basis but doubles as a brake on credential-stuffing.
  */
 
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
+import { loginHandler } from "./login";
 import { signupHandler } from "./signup";
 import { verifyOtpHandler } from "./verifyOtp";
 
@@ -30,7 +30,16 @@ const verifyLimiter = rateLimit({
   message: { ok: false, error: "Too many attempts. Try again shortly." },
 });
 
+const loginLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many login attempts. Try again shortly." },
+});
+
 export const authRouter = Router();
 
 authRouter.post("/signup", signupLimiter, signupHandler);
 authRouter.post("/verify-otp", verifyLimiter, verifyOtpHandler);
+authRouter.post("/login", loginLimiter, loginHandler);

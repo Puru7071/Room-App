@@ -20,3 +20,5 @@ export function generateOTP(): string {
 export function otpExpiresAt(): Date {
   return new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
 }
+
+

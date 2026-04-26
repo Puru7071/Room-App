@@ -8,19 +8,38 @@ import {
   youtubeWatchUrl,
 } from "@/lib/youtube";
 
+/**
+ * The queue body — scrollable list of past / now / next rows. The outer
+ * chrome and heading row live one level up in `RoomSidePanel`; this view
+ * is just the scroll area.
+ */
+
 type QueueJumpPayload =
   | { zone: "past"; index: number }
   | { zone: "next"; index: number };
 
-type RoomQueuePanelProps = {
+export type QueueViewProps = {
   past: RoomQueueEntry[];
   nowPlaying: RoomQueueEntry | null;
   cues: RoomQueueEntry[];
   sessionStarted: boolean;
   phase: "default" | "playing" | "stopped";
   onJump?: (payload: QueueJumpPayload) => void;
-  className?: string;
+  /**
+   * `true` while the queue is being fetched from the server on page
+   * mount. Renders skeleton placeholder rows instead of the empty
+   * "Add a YouTube link above." copy so the user sees a real loading
+   * affordance during the initial load.
+   */
+  loading?: boolean;
 };
+
+/**
+ * Process-wide cache of YouTube oEmbed titles. Persisted across
+ * unmounts (e.g. switching between Chat/Queue tabs) so titles don't
+ * blink-and-refetch on every re-mount. Keyed by videoId.
+ */
+const titleCache = new Map<string, string>();
 
 type RowKind = "past" | "now" | "next";
 
@@ -33,9 +52,18 @@ type RowModel = {
 };
 
 function useYouTubeOEmbedTitle(videoId: string) {
-  const [title, setTitle] = useState<string | null>(null);
+  // Seed from the module cache so a row that re-mounts (e.g. tab
+  // toggle) reads the title synchronously and never flashes "loading".
+  const [title, setTitle] = useState<string | null>(
+    () => titleCache.get(videoId) ?? null,
+  );
 
   useEffect(() => {
+    const cached = titleCache.get(videoId);
+    if (cached) {
+      setTitle(cached);
+      return;
+    }
     setTitle(null);
     let cancelled = false;
     const watch = youtubeWatchUrl(videoId);
@@ -44,10 +72,16 @@ function useYouTubeOEmbedTitle(videoId: string) {
     )
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("oembed"))))
       .then((data: { title?: string }) => {
-        if (!cancelled && data.title) setTitle(data.title);
+        if (cancelled) return;
+        const t = data.title ?? "YouTube video";
+        titleCache.set(videoId, t);
+        setTitle(t);
       })
       .catch(() => {
-        if (!cancelled) setTitle("YouTube video");
+        if (cancelled) return;
+        const fallback = "YouTube video";
+        titleCache.set(videoId, fallback);
+        setTitle(fallback);
       });
     return () => {
       cancelled = true;
@@ -111,7 +145,14 @@ function QueueListRow({
               : "text-foreground dark:text-white"
           }`}
         >
-          {title ?? "\u00a0"}
+          {title === null ? (
+            <span className="inline-flex w-full flex-col gap-1.5 py-0.5 align-middle" aria-hidden>
+              <span className="block h-3 w-11/12 animate-pulse rounded bg-muted/40 dark:bg-zinc-800/60" />
+              <span className="block h-3 w-7/12 animate-pulse rounded bg-muted/40 dark:bg-zinc-800/60" />
+            </span>
+          ) : (
+            title
+          )}
         </p>
         <p className="mt-1 truncate text-xs text-muted dark:text-[#aaaaaa]">
           Added by {entry.addedByName}
@@ -141,15 +182,15 @@ function QueueListRow({
   );
 }
 
-export function RoomQueuePanel({
+export function QueueView({
   past,
   nowPlaying,
   cues,
   sessionStarted,
   phase,
   onJump,
-  className = "",
-}: RoomQueuePanelProps) {
+  loading = false,
+}: QueueViewProps) {
   const rows = useMemo((): RowModel[] => {
     const out: RowModel[] = [];
     past.forEach((entry, i) => {
@@ -165,51 +206,68 @@ export function RoomQueuePanel({
   }, [past, nowPlaying, cues, sessionStarted, phase]);
 
   return (
-    <div
-      className={`flex h-full rounded-md min-h-0 flex-col overflow-hidden border border-border bg-zinc-100 text-foreground shadow-sm dark:border-zinc-800 dark:bg-[#0f0f0f] dark:text-zinc-100 ${className}`}
-    >
-      <div className="flex shrink-0 items-center justify-start gap-2 py-2.5 pl-2.5 pr-0 sm:pl-3">
-        <AppIcon
-          icon="lucide:list-video"
-          className="h-5 w-5 shrink-0 text-muted dark:text-zinc-400"
-          aria-hidden
-        />
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted dark:text-zinc-500">
-          Queue
+    <div className="room-queue-scroll rounded-md min-h-0 flex-1 overflow-y-auto">
+      {loading ? (
+        <QueueListSkeleton />
+      ) : !sessionStarted ? (
+        <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
+          Add a YouTube link above.
         </p>
-      </div>
-
-      <div className="room-queue-scroll rounded-md min-h-0 flex-1 overflow-y-auto">
-        {!sessionStarted ? (
-          <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
-            Add a YouTube link above.
-          </p>
-        ) : rows.length === 0 ? (
-          <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
-            {phase === "stopped"
-              ? "Nothing playing. Add a link to start again."
-              : "Queue is empty—add links from the bar above."}
-          </p>
-        ) : (
-          <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2">
-            {rows.map(({ kind, entry, key, pastIndex, cueIndex }) => (
-              <li key={key} className="min-w-0">
-                <QueueListRow
-                  entry={entry}
-                  kind={kind}
-                  onActivate={
-                    onJump && kind === "past" && pastIndex !== undefined
-                      ? () => onJump({ zone: "past", index: pastIndex })
-                      : onJump && kind === "next" && cueIndex !== undefined
-                        ? () => onJump({ zone: "next", index: cueIndex })
-                        : undefined
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      ) : rows.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
+          {phase === "stopped"
+            ? "Nothing playing. Add a link to start again."
+            : "Queue is empty—add links from the bar above."}
+        </p>
+      ) : (
+        <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2">
+          {rows.map(({ kind, entry, key, pastIndex, cueIndex }) => (
+            <li key={key} className="min-w-0">
+              <QueueListRow
+                entry={entry}
+                kind={kind}
+                onActivate={
+                  onJump && kind === "past" && pastIndex !== undefined
+                    ? () => onJump({ zone: "past", index: pastIndex })
+                    : onJump && kind === "next" && cueIndex !== undefined
+                      ? () => onJump({ zone: "next", index: cueIndex })
+                      : undefined
+                }
+              />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
+  );
+}
+
+/**
+ * Three placeholder rows shown while the queue is being fetched from
+ * the server on page load. Sized to match the real `QueueListRow`
+ * footprint so the panel doesn't jump when the data lands.
+ */
+function QueueListSkeleton() {
+  return (
+    <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2" aria-label="Loading queue">
+      {[0, 1, 2].map((i) => (
+        <li key={i} className="min-w-0">
+          <div
+            className="flex min-h-0 w-full animate-pulse items-stretch gap-2 py-2 pl-1 pr-0"
+            aria-hidden
+          >
+            <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex w-5 shrink-0 items-center justify-center self-center" />
+              <div className="h-18 w-20 shrink-0 rounded-md bg-muted/40 dark:bg-zinc-800/60 sm:h-[3.9rem] sm:w-27" />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col justify-center gap-1.5">
+              <div className="h-3 w-11/12 rounded bg-muted/40 dark:bg-zinc-800/60" />
+              <div className="h-3 w-7/12 rounded bg-muted/40 dark:bg-zinc-800/60" />
+              <div className="mt-1 h-2.5 w-5/12 rounded bg-muted/30 dark:bg-zinc-800/50" />
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }

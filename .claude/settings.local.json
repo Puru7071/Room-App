@@ -18,7 +18,13 @@
       "Bash(yes)",
       "Bash(curl -s -o /dev/null -w \"/room %{http_code}\\\\n\" http://localhost:3001/room)",
       "Read(//Users/purubhargava/Desktop/Projects/instagram Clone/server-side/config/**)",
-      "Read(//Users/purubhargava/Desktop/Projects/instagram Clone/server-side/views/mailer/**)"
+      "Read(//Users/purubhargava/Desktop/Projects/instagram Clone/server-side/views/mailer/**)",
+      "WebFetch(domain:www.reactbits.dev)",
+      "Bash(gh api *)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(awk 'NR>=140 && NR<=153 { for\\(i=1;i<=length\\($0\\);i++\\){c=substr\\($0,i,1\\); if\\(c==\"\\\\t\"\\)printf\"\\\\\\\\t\";else printf\"%s\",c} printf\"\\\\n\" }' src/components/client/room/panels/QueueView.tsx)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }

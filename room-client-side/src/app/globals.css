@@ -115,3 +115,183 @@ html.dark .room-queue-scroll::-webkit-scrollbar-thumb:hover {
     animation-duration: 0.01ms;
   }
 }
+
+/* Tiny equalizer-bar indicator beside "NOW PLAYING" — three thin bars
+   pulsing at different cadences. Pure CSS, scaled with transform so
+   layout doesn't reflow each frame. */
+@keyframes room-eq-bar-a {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes room-eq-bar-b {
+  0%,
+  100% {
+    transform: scaleY(0.7);
+  }
+  50% {
+    transform: scaleY(0.25);
+  }
+}
+
+@keyframes room-eq-bar-c {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(0.95);
+  }
+}
+
+.room-eq-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+
+.room-eq-bars > span {
+  display: inline-block;
+  width: 2px;
+  height: 100%;
+  background-color: currentColor;
+  border-radius: 1px;
+  transform-origin: bottom;
+}
+
+.room-eq-bars > span:nth-child(1) {
+  animation: room-eq-bar-a 0.7s ease-in-out infinite;
+}
+
+.room-eq-bars > span:nth-child(2) {
+  animation: room-eq-bar-b 0.9s ease-in-out infinite;
+  animation-delay: 0.15s;
+}
+
+.room-eq-bars > span:nth-child(3) {
+  animation: room-eq-bar-c 1.1s ease-in-out infinite;
+  animation-delay: 0.05s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-eq-bars > span {
+    animation: none;
+    transform: scaleY(0.6);
+  }
+}
+
+/* Subtle diagonal-drift dot pattern for the now-playing card. Tiny
+   dots in a uniform grid; a linear mask fades them toward the
+   top-left so the visible density concentrates at the bottom-right
+   corner. Background-position animates one full tile from (0,0) to
+   (-14, -14), making the dots flow diagonally from bottom-right
+   toward the top-left in a continuous loop. */
+@keyframes room-corner-drift {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: -18px -18px;
+  }
+}
+
+.room-corner-ripple {
+  /* Tiny soft specks on a wider grid. Solid core is sub-pixel
+     (0.5px); the rest of each dot is a soft 1.5px halo, so even at
+     full mask alpha the dots read as a quiet sheen rather than a
+     dotted pattern. */
+  background-image: radial-gradient(
+    circle,
+    var(--room-ripple-color, rgba(24, 24, 27, 0.4)) 0.5px,
+    var(--room-ripple-fade, rgba(24, 24, 27, 0)) 1.5px
+  );
+  background-size: 18px 18px;
+  /* Mask caps even the brightest corner at ~70% of layer opacity, so
+     nothing in the card ever shows the dots at full strength. The
+     top-left two-thirds is essentially invisible. */
+  -webkit-mask-image: linear-gradient(
+    to bottom right,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0) 35%,
+    rgba(0, 0, 0, 0.2) 65%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom right,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0) 35%,
+    rgba(0, 0, 0, 0.2) 65%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  animation: room-corner-drift 32s linear infinite;
+}
+
+html.dark .room-corner-ripple {
+  --room-ripple-color: rgba(255, 255, 255, 0.4);
+  --room-ripple-fade: rgba(255, 255, 255, 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-corner-ripple {
+    animation: none;
+  }
+}
+
+/* Indeterminate sliding-bar animation for the global route loader.
+   The fill is a 50%-wide segment that slides from off-screen left to
+   off-screen right, matching the YouTube-style "still loading" feel. */
+@keyframes room-loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.room-loading-bar {
+  width: 50%;
+  animation: room-loading-bar 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-loading-bar {
+    animation: none;
+    transform: translateX(0);
+  }
+}
+
+/* Countdown bar at the top of a join-request card. Shrinks linearly
+   from full width to zero over the request's remaining lifetime. The
+   element's `style={{ animationDuration: ...ms }}` is set per-request
+   to the time remaining, so a card that mounts halfway through its
+   life starts at the correct width. */
+@keyframes room-request-countdown {
+  from {
+    width: 100%;
+  }
+  to {
+    width: 0%;
+  }
+}
+
+.room-request-countdown {
+  animation-name: room-request-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-request-countdown {
+    animation: none;
+    /* When animation is disabled, leave the bar at a steady halfway
+       width so the user still sees an indicator that this is timed. */
+    width: 50%;
+  }
+}

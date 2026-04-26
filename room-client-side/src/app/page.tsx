@@ -1,4 +1,5 @@
 import { AuthGateForms } from "@/components/client/home/AuthGateForms";
+import { HomeAuthLoadingOverlay } from "@/components/client/home/HomeAuthLoadingOverlay";
 import { HomeFeatureCards } from "@/components/home/HomeFeatureCards";
 import { HomeHeader } from "@/components/home/HomeHeader";
 import { HomeHero } from "@/components/home/HomeHero";
@@ -8,6 +9,11 @@ export default function Home() {
   return (
     <div className="fixed inset-0 z-0 flex flex-col overflow-hidden bg-background text-foreground">
       <AmbientPageBackground mouseShadow />
+      {/* Covers the page with the GlobalLoader until the client-side
+          JWT check resolves. The page content renders underneath in
+          the same paint, so when the overlay unmounts there's no
+          shift — content is already in place. */}
+      <HomeAuthLoadingOverlay />
 
       <HomeHeader />
 

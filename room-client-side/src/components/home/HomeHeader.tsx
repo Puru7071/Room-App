@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { HomeHeaderActions } from "@/components/client/home/HomeHeaderActions";
+import { MyRoomsPopover } from "@/components/client/home/MyRoomsPopover";
 import { APP_DISPLAY_NAME } from "@/lib/app-constants";
 
 export function HomeHeader() {
@@ -11,7 +12,7 @@ export function HomeHeader() {
         tabIndex={-1}
         className="flex shrink-0 items-center gap-4 rounded-lg outline-none ring-accent-blue/40 focus-visible:ring-2"
       >
-        <div 
+        <div
           className="p-0.5 py-0 bg-white rounded-sm"
         >
         <Image
@@ -31,7 +32,7 @@ export function HomeHeader() {
       </Link>
 
       <div className="flex flex-row items-center gap-3 sm:gap-4">
-        <HomeHeaderActions />
+        <HomeHeaderActions beforeTheme={<MyRoomsPopover />} showLogout />
       </div>
     </header>
   );

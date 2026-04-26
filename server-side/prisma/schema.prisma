@@ -34,4 +34,123 @@ model User {
   password      String
   createdAt     DateTime @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  rooms        RoomMember[]
+  invites      RoomInvite[]
+  createdRooms Room[]       @relation("RoomCreator")
+  queueAdds    RoomQueueItem[]
+}
+
+enum RoomMemberStatus {
+  VIEWER
+  LEADER
+  SUB_LEADER
+}
+
+enum RoomNature {
+  PUBLIC
+  PRIVATE
+}
+
+enum RoomEditAccess {
+  ALL
+  LIMITED
+}
+
+// Shared between RoomSettings.chatRights and RoomSettings.videoAudioRights.
+// ALL = everyone may participate; LIMITED = restricted (semantics owned
+// by the API layer when authz lands).
+enum RoomAccessLevel {
+  ALL
+  LIMITED
+}
+
+model Room {
+  roomId     String   @id @default(uuid())
+  name       String
+  // FK to User.userId. Required: every room must have a creator. The product
+  // doesn't expose account deletion, so a nullable / SET NULL fallback isn't
+  // needed; the FK uses Restrict so any future admin-only delete path fails
+  // loudly until rooms are reassigned or removed.
+  createdBy  String
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  // Bumped on every meaningful interaction (join, chat, queue update). The
+  // 6-hourly cleanup cron sweeps rows where lastUsedAt < now() - 24h.
+  lastUsedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  creator   User            @relation("RoomCreator", fields: [createdBy], references: [userId], onDelete: Restrict)
+  members   RoomMember[]
+  invites   RoomInvite[]
+  settings  RoomSettings?
+  queueItems RoomQueueItem[]
+
+  @@index([lastUsedAt])
+  @@index([createdBy])
+}
+
+model RoomMember {
+  userId   String
+  roomId   String
+  status   RoomMemberStatus @default(VIEWER)
+  isBanned Boolean          @default(false)
+  joinedAt DateTime         @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [roomId], onDelete: Cascade)
+
+  // Composite PK enforces "one membership row per (user, room)" at the DB
+  // level so duplicate joins are physically impossible.
+  @@id([userId, roomId])
+  // Composite PK is ordered (userId, roomId), so "list all members of room X"
+  // isn't index-backed without this explicit second index.
+  @@index([roomId])
+}
+
+model RoomInvite {
+  userId String
+  roomId String
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  room Room @relation(fields: [roomId], references: [roomId], onDelete: Cascade)
+
+  @@id([userId, roomId])
+  @@index([roomId])
+}
+
+model RoomSettings {
+  roomId           String          @id
+  nature           RoomNature      @default(PRIVATE)
+  loop             Boolean         @default(false)
+  editAccess       RoomEditAccess  @default(LIMITED)
+  chatRights       RoomAccessLevel @default(ALL)
+  videoAudioRights RoomAccessLevel @default(ALL)
+
+  room Room @relation(fields: [roomId], references: [roomId], onDelete: Cascade)
+}
+
+// Persisted queue of YouTube videos for a room. Inserted on add (via
+// POST /rooms/:id/queue), loaded on page mount (via GET /rooms/:id/queue),
+// broadcast over WS so other connected members see the same add live.
+//
+// `addedByName` is denormalized to keep queue reads single-table — the
+// alternative is a join to User on every fetch, which adds latency for
+// no real benefit since usernames rarely change.
+//
+// `position` is a monotonically-increasing integer assigned at insert
+// time (max(position) + 1 within the room). Stored as a separate column
+// from `addedAt` so future drag-reorder doesn't have to mutate
+// timestamps.
+model RoomQueueItem {
+  id          String   @id @default(uuid())
+  roomId      String
+  videoId     String
+  addedById   String
+  addedByName String
+  addedAt     DateTime @default(now()) @db.Timestamptz(3)
+  position    Int
+
+  room    Room @relation(fields: [roomId], references: [roomId], onDelete: Cascade)
+  addedBy User @relation(fields: [addedById], references: [userId], onDelete: Cascade)
+
+  @@index([roomId, position])
 }

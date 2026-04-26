@@ -3,17 +3,29 @@
 import { useContext, type ReactNode } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import { ThemeContext } from "@/components/client/theme/ThemeContext";
+import { LogoutButton } from "@/components/client/home/LogoutButton";
+import { UserAvatar } from "@/components/client/home/UserAvatar";
 
 type HomeHeaderActionsProps = {
   /** Left of private toggle / theme (e.g. member facepile). */
   beforePrivateToggle?: ReactNode;
   /** Rendered to the left of the theme switcher (e.g. room private toggle). */
   beforeTheme?: ReactNode;
+  /** Rendered to the right of the theme switcher, before logout/avatar
+   *  (e.g. room settings gear). */
+  afterTheme?: ReactNode;
+  /**
+   * Show a circular logout button + user avatar to the right of the theme
+   * toggler. Both home and room headers opt in.
+   */
+  showLogout?: boolean;
 };
 
 export function HomeHeaderActions({
   beforePrivateToggle,
   beforeTheme,
+  afterTheme,
+  showLogout,
 }: HomeHeaderActionsProps) {
   const ctx = useContext(ThemeContext);
   if (!ctx) {
@@ -47,6 +59,13 @@ export function HomeHeaderActions({
           />
         )}
       </button>
+      {afterTheme}
+      {showLogout ? (
+        <>
+          <LogoutButton />
+          <UserAvatar />
+        </>
+      ) : null}
     </div>
   );
 }
