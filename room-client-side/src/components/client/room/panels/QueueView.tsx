@@ -1,12 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import type { RoomQueueEntry } from "@/lib/room-types";
-import {
-  youtubeThumbnailUrl,
-  youtubeWatchUrl,
-} from "@/lib/youtube";
+import { useYouTubeOEmbedTitle } from "@/lib/use-youtube-oembed-title";
+import { youtubeThumbnailUrl } from "@/lib/youtube";
 
 /**
  * The queue body — scrollable list of past / now / next rows. The outer
@@ -26,6 +24,13 @@ export type QueueViewProps = {
   phase: "default" | "playing" | "stopped";
   onJump?: (payload: QueueJumpPayload) => void;
   /**
+   * Whether the requester is allowed to drive playback. When false the
+   * past/next rows are non-interactive AND visually marked with a
+   * not-allowed cursor on hover. Drives the disabled affordance even
+   * though `onJump` is independently undefined in the same case.
+   */
+  canControlPlayback?: boolean;
+  /**
    * `true` while the queue is being fetched from the server on page
    * mount. Renders skeleton placeholder rows instead of the empty
    * "Add a YouTube link above." copy so the user sees a real loading
@@ -33,13 +38,6 @@ export type QueueViewProps = {
    */
   loading?: boolean;
 };
-
-/**
- * Process-wide cache of YouTube oEmbed titles. Persisted across
- * unmounts (e.g. switching between Chat/Queue tabs) so titles don't
- * blink-and-refetch on every re-mount. Keyed by videoId.
- */
-const titleCache = new Map<string, string>();
 
 type RowKind = "past" | "now" | "next";
 
@@ -51,63 +49,35 @@ type RowModel = {
   cueIndex?: number;
 };
 
-function useYouTubeOEmbedTitle(videoId: string) {
-  // Seed from the module cache so a row that re-mounts (e.g. tab
-  // toggle) reads the title synchronously and never flashes "loading".
-  const [title, setTitle] = useState<string | null>(
-    () => titleCache.get(videoId) ?? null,
-  );
-
-  useEffect(() => {
-    const cached = titleCache.get(videoId);
-    if (cached) {
-      setTitle(cached);
-      return;
-    }
-    setTitle(null);
-    let cancelled = false;
-    const watch = youtubeWatchUrl(videoId);
-    fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(watch)}&format=json`,
-    )
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("oembed"))))
-      .then((data: { title?: string }) => {
-        if (cancelled) return;
-        const t = data.title ?? "YouTube video";
-        titleCache.set(videoId, t);
-        setTitle(t);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        const fallback = "YouTube video";
-        titleCache.set(videoId, fallback);
-        setTitle(fallback);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [videoId]);
-
-  return title;
-}
-
 function QueueListRow({
   entry,
   kind,
   onActivate,
+  disabled = false,
 }: {
   entry: RoomQueueEntry;
   kind: RowKind;
   onActivate?: () => void;
+  /**
+   * Marks past/next rows that *would* be clickable but the requester
+   * lacks playback authority. Renders a non-interactive `<div>` with a
+   * `cursor-not-allowed` hint instead of the regular pointer.
+   */
+  disabled?: boolean;
 }) {
   const title = useYouTubeOEmbedTitle(entry.videoId);
 
+  // Rows are intentionally TRANSPARENT so the panel's particle
+  // background drifts visibly behind them. The "now" row keeps a thin
+  // translucent amber wash for differentiation; past/next rows reveal
+  // their state via the play-glyph + grayscale-thumbnail (past) and
+  // a subtle hover-only tint, never a solid fill.
   const rowClass =
     kind === "now"
-      ? "bg-amber-500/[0.12] hover:bg-amber-500/[0.16] dark:bg-[#1f1b12] dark:hover:bg-[#252016]"
+      ? "bg-amber-500/[0.10] hover:bg-amber-500/[0.16] dark:bg-amber-500/[0.10] dark:hover:bg-amber-500/[0.16]"
       : kind === "past"
-        ? "bg-card opacity-[0.92] hover:opacity-100 dark:bg-[#0f0f0f] dark:opacity-[0.72] dark:hover:opacity-90"
-        : "bg-card hover:bg-zinc-50/90 dark:bg-[#0f0f0f] dark:hover:bg-zinc-900/90";
+        ? "bg-transparent opacity-[0.85] hover:bg-foreground/[0.04] hover:opacity-100 dark:opacity-[0.70] dark:hover:bg-zinc-100/[0.04] dark:hover:opacity-90"
+        : "bg-transparent hover:bg-foreground/[0.04] dark:hover:bg-zinc-100/[0.04]";
 
   /** Fixed width so “now” play glyph lines up with past/upcoming thumbnails. */
   const playColumnClass = "flex w-5 shrink-0 items-center justify-center self-center";
@@ -162,9 +132,13 @@ function QueueListRow({
   );
 
   if (kind === "now" || !onActivate) {
+    // Non-interactive row. For past/next rows that are disabled because
+    // the requester lacks playback authority, surface a `cursor-not-allowed`
+    // hint so hovering over the row reads as "you can't act on this".
+    const cursorClass = disabled ? "cursor-not-allowed" : "";
     return (
       <div
-        className={`flex min-h-0 w-full items-stretch gap-2 py-2 pl-1 pr-0 ${rowClass}`}
+        className={`flex min-h-0 w-full items-stretch gap-2 py-2 pl-1 pr-0 ${rowClass} ${cursorClass}`}
       >
         {inner}
       </div>
@@ -189,6 +163,7 @@ export function QueueView({
   sessionStarted,
   phase,
   onJump,
+  canControlPlayback = true,
   loading = false,
 }: QueueViewProps) {
   const rows = useMemo((): RowModel[] => {
@@ -205,39 +180,72 @@ export function QueueView({
     return out;
   }, [past, nowPlaying, cues, sessionStarted, phase]);
 
+  // Auto-scroll the now-playing row into view ONCE per mount. The user
+  // can freely scroll afterwards — we don't yank them back. Because
+  // `RoomSidePanel` conditionally renders this component per active
+  // tab, switching away and back to the Queue tab counts as a fresh
+  // mount and re-fires this effect, which is exactly the "whenever
+  // the panel opens" behaviour the user wants.
+  const nowRowRef = useRef<HTMLLIElement | null>(null);
+  const scrollDoneRef = useRef(false);
+  useEffect(() => {
+    if (loading) return;
+    if (scrollDoneRef.current) return;
+    const node = nowRowRef.current;
+    if (!node) return;
+    // `block: "center"` puts the now-playing row in the middle of the
+    // scroll viewport when there's enough content above and below;
+    // when there isn't, the browser clamps to a valid scroll position
+    // (e.g., row stays at the top if there are no past items).
+    node.scrollIntoView({ block: "center", behavior: "auto" });
+    scrollDoneRef.current = true;
+  }, [loading]);
+
   return (
-    <div className="room-queue-scroll rounded-md min-h-0 flex-1 overflow-y-auto">
-      {loading ? (
-        <QueueListSkeleton />
-      ) : !sessionStarted ? (
-        <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
-          Add a YouTube link above.
-        </p>
-      ) : rows.length === 0 ? (
-        <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
-          {phase === "stopped"
-            ? "Nothing playing. Add a link to start again."
-            : "Queue is empty—add links from the bar above."}
-        </p>
-      ) : (
-        <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2">
-          {rows.map(({ kind, entry, key, pastIndex, cueIndex }) => (
-            <li key={key} className="min-w-0">
-              <QueueListRow
-                entry={entry}
-                kind={kind}
-                onActivate={
-                  onJump && kind === "past" && pastIndex !== undefined
-                    ? () => onJump({ zone: "past", index: pastIndex })
-                    : onJump && kind === "next" && cueIndex !== undefined
-                      ? () => onJump({ zone: "next", index: cueIndex })
-                      : undefined
-                }
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+    // The shared particle canvas lives in `RoomSidePanel` so it stays
+    // mounted across tab switches; this view only renders the scroll
+    // area on top.
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="room-queue-scroll rounded-md min-h-0 flex-1 overflow-y-auto">
+        {loading ? (
+          <QueueListSkeleton />
+        ) : !sessionStarted ? (
+          <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
+            Add a YouTube link above.
+          </p>
+        ) : rows.length === 0 ? (
+          <p className="px-4 py-8 text-center text-xs leading-relaxed text-muted sm:text-sm dark:text-zinc-500">
+            {phase === "stopped"
+              ? "Nothing playing. Add a link to start again."
+              : "Queue is empty—add links from the bar above."}
+          </p>
+        ) : (
+          <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2">
+            {rows.map(({ kind, entry, key, pastIndex, cueIndex }) => (
+              <li
+                key={key}
+                ref={kind === "now" ? nowRowRef : undefined}
+                className="min-w-0"
+              >
+                <QueueListRow
+                  entry={entry}
+                  kind={kind}
+                  onActivate={
+                    onJump && kind === "past" && pastIndex !== undefined
+                      ? () => onJump({ zone: "past", index: pastIndex })
+                      : onJump && kind === "next" && cueIndex !== undefined
+                        ? () => onJump({ zone: "next", index: cueIndex })
+                        : undefined
+                  }
+                  disabled={
+                    !canControlPlayback && (kind === "past" || kind === "next")
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

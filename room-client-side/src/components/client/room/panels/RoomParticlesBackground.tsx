@@ -1,15 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import type { ISourceOptions } from "@tsparticles/engine";
 import { loadSlim } from "@tsparticles/slim";
 
 /**
- * Particle background for the chat panel — bubble preset matching the
- * particles.js demo (vincentgarreau.com/particles.js#bubble). Sits behind
- * the chat content as an absolute fill; hover/click are detected on the
- * parent container so particles can bubble without intercepting input.
+ * Shared particle background — colorful "growing" preset adapted from
+ * the particles.js samples. Used across the side-panel tabs (Chat,
+ * Queue, …) so they share a consistent ambient backdrop. Sits as an
+ * absolute fill behind content; pointer-events are off on the canvas
+ * so it never intercepts user input.
+ *
+ * Each consumer should pass a unique `id` since multiple instances
+ * could co-exist (different panel tabs are mounted/unmounted but a
+ * mounted-twice scenario from React strict-mode would otherwise share
+ * an id).
  */
 
 // Engine init is one-shot for the whole app — share the promise across
@@ -24,7 +30,21 @@ function ensureInit() {
   return initPromise;
 }
 
-export function ChatParticlesBackground() {
+type RoomParticlesBackgroundProps = {
+  /** Unique element id for the canvas. Defaults to a generic value. */
+  id?: string;
+};
+
+/**
+ * Memoized so re-renders triggered by ancestor state changes (e.g. the
+ * loop toggle in the queue panel header) don't propagate down here and
+ * cause `<Particles>` to re-initialize its canvas — which would visibly
+ * restart the drift animation. The only prop is `id`, a string literal
+ * passed by each consumer; with shallow-equal props the memo bails out.
+ */
+function RoomParticlesBackgroundInner({
+  id = "room-particles",
+}: RoomParticlesBackgroundProps = {}) {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -85,9 +105,11 @@ export function ChatParticlesBackground() {
   if (!ready) return null;
   return (
     <Particles
-      id="chat-particles"
+      id={id}
       options={options}
       className="pointer-events-none absolute inset-0"
     />
   );
 }
+
+export const RoomParticlesBackground = memo(RoomParticlesBackgroundInner);

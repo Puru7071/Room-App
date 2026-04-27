@@ -1,20 +1,21 @@
 "use client";
 
 import { AppIcon } from "@/components/icons/AppIcon";
-import { ChatParticlesBackground } from "./ChatParticlesBackground";
 
 /**
  * Dummy / placeholder for the future group-chat view inside the side
  * panel. Real chat (rendering, send box, message ordering, server
  * subscription) lands in a later plan; today this is a visual stand-in
  * so the tab is reachable.
+ *
+ * The shared particle backdrop lives in `RoomSidePanel`; this view
+ * only renders foreground content.
  */
 export function ChatView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-2 overflow-hidden px-4 py-8 text-center">
-        <ChatParticlesBackground />
-        <div className="relative z-10 flex flex-col items-center gap-2">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center">
+        <div className="flex flex-col items-center gap-2">
           <AppIcon
             icon="lucide:message-square"
             className="h-6 w-6 text-muted dark:text-zinc-500"

@@ -3,6 +3,12 @@
 import { useEffect, useRef } from "react";
 import { getSocket } from "@/lib/ws-client";
 import type {
+  AddRequestApprovedPayload,
+  AddRequestCreatedPayload,
+  AddRequestExpiredPayload,
+  AddRequestListPayload,
+  AddRequestRejectedPayload,
+  AddRequestRemovedPayload,
   JoinRequestWire,
   MemberJoinedPayload,
   PlaybackPollPayload,
@@ -14,6 +20,7 @@ import type {
   RequestListPayload,
   RequestRejectedPayload,
   RequestRemovedPayload,
+  VideoAddRequestWire,
 } from "@/lib/ws-events";
 
 type Handlers = {
@@ -58,6 +65,24 @@ type Handlers = {
    * `room.playback.report-state`.
    */
   onPlaybackPollState?: (payload: PlaybackPollPayload) => void;
+  /* --------- video-add requests (broadcaster carousel) ---------- */
+  /** Initial set of pending video-add requests, sent to leaders on subscribe. */
+  onAddRequestList?: (requests: VideoAddRequestWire[]) => void;
+  /** A new video-add request just arrived (leader-only, user channel). */
+  onAddRequestCreated?: (request: VideoAddRequestWire) => void;
+  /** TTL sweep evicted a video-add request (broadcast on room channel). */
+  onAddRequestExpired?: (requestId: string) => void;
+  /** Sent to the requester when the leader approves their video-add request. */
+  onAddRequestApproved?: (payload: AddRequestApprovedPayload) => void;
+  /** Sent to the requester when the leader rejects their video-add request. */
+  onAddRequestRejected?: (payload: AddRequestRejectedPayload) => void;
+  /**
+   * Broadcast on the room channel when a video-add request is
+   * resolved (approved OR rejected). The leader's panel filters the
+   * card from state via this signal — independent of the requester-
+   * targeted approved/rejected events.
+   */
+  onAddRequestRemoved?: (requestId: string) => void;
 };
 
 /**
@@ -123,6 +148,30 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       if (p.roomId !== roomId) return;
       handlersRef.current.onPlaybackPollState?.(p);
     };
+    const onAddList = (p: AddRequestListPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onAddRequestList?.(p.requests);
+    };
+    const onAddCreated = (p: AddRequestCreatedPayload) => {
+      if (p.request.roomId !== roomId) return;
+      handlersRef.current.onAddRequestCreated?.(p.request);
+    };
+    const onAddExpired = (p: AddRequestExpiredPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onAddRequestExpired?.(p.requestId);
+    };
+    const onAddRemoved = (p: AddRequestRemovedPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onAddRequestRemoved?.(p.requestId);
+    };
+    const onAddApproved = (p: AddRequestApprovedPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onAddRequestApproved?.(p);
+    };
+    const onAddRejected = (p: AddRequestRejectedPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onAddRequestRejected?.(p);
+    };
 
     socket.on("room.request.list", onList);
     socket.on("room.request.created", onCreated);
@@ -134,6 +183,12 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
     socket.on("room.queue.added", onQueueAdded);
     socket.on("room.playback.sync", onPlaybackSync);
     socket.on("room.playback.poll-state", onPlaybackPollState);
+    socket.on("room.add-request.list", onAddList);
+    socket.on("room.add-request.created", onAddCreated);
+    socket.on("room.add-request.expired", onAddExpired);
+    socket.on("room.add-request.removed", onAddRemoved);
+    socket.on("room.add-request.approved", onAddApproved);
+    socket.on("room.add-request.rejected", onAddRejected);
 
     // Subscribe both on initial mount AND on every reconnect — Socket.IO
     // forgets which channels the client was in across a disconnect.
@@ -152,10 +207,16 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       socket.off("room.queue.added", onQueueAdded);
       socket.off("room.playback.sync", onPlaybackSync);
       socket.off("room.playback.poll-state", onPlaybackPollState);
+      socket.off("room.add-request.list", onAddList);
+      socket.off("room.add-request.created", onAddCreated);
+      socket.off("room.add-request.expired", onAddExpired);
+      socket.off("room.add-request.removed", onAddRemoved);
+      socket.off("room.add-request.approved", onAddApproved);
+      socket.off("room.add-request.rejected", onAddRejected);
       socket.off("connect", subscribe);
     };
   }, [roomId]);
 }
 
-/** Re-export the wire type so callers don't need a second import. */
-export type { JoinRequestWire } from "@/lib/ws-events";
+/** Re-export the wire types so callers don't need a second import. */
+export type { JoinRequestWire, VideoAddRequestWire } from "@/lib/ws-events";

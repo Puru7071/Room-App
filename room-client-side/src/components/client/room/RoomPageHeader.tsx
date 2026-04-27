@@ -46,13 +46,6 @@ type RoomPageHeaderProps = {
    *  updates a setting. Wires the parent's `setSettings` so the panel
    *  reflects the latest server-truth. */
   onSettingsUpdated?: (next: RoomSettingsDetail) => void;
-  /**
-   * Whether the requesting user is allowed to add videos to the queue.
-   * False for non-leaders in private rooms — disables both the URL
-   * input + plus button AND the YouTube search input. The dedicated
-   * "request to add" flow is a follow-up story.
-   */
-  canAddVideos?: boolean;
 };
 
 export function RoomPageHeader({
@@ -66,15 +59,10 @@ export function RoomPageHeader({
   isOwner,
   settings,
   onSettingsUpdated,
-  canAddVideos = true,
 }: RoomPageHeaderProps) {
   const handleAddVideo = useCallback(() => {
-    if (!canAddVideos) return;
     onAddVideo();
-  }, [onAddVideo, canAddVideos]);
-  const lockedTooltip = canAddVideos
-    ? undefined
-    : "Only the host can add videos in a private room";
+  }, [onAddVideo]);
 
   return (
     <header className="relative z-40 shrink-0 bg-transparent">
@@ -130,28 +118,25 @@ export function RoomPageHeader({
                   name="youtubeUrl"
                   value={videoUrl}
                   onChange={(e) => onVideoUrlChange(e.target.value)}
-                  placeholder={canAddVideos ? "Paste YouTube link…" : "Host-only in private rooms"}
+                  placeholder="Paste YouTube link…"
                   autoComplete="off"
                   spellCheck={false}
                   tabIndex={-1}
-                  disabled={!canAddVideos}
-                  title={lockedTooltip}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
                       handleAddVideo();
                     }
                   }}
-                  className="min-w-0 flex-1 border-0 bg-input-bg/70 py-2 pl-2 pr-1.5 text-xs font-medium text-foreground outline-none ring-0 placeholder:text-muted focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60 sm:py-2.5 sm:pl-2.5 sm:text-sm"
+                  className="min-w-0 flex-1 border-0 bg-input-bg/70 py-2 pl-2 pr-1.5 text-xs font-medium text-foreground outline-none ring-0 placeholder:text-muted focus:ring-0 sm:py-2.5 sm:pl-2.5 sm:text-sm"
                 />
                 <button
                   type="button"
                   onClick={handleAddVideo}
-                  title={lockedTooltip ?? "Add video"}
+                  title="Add video"
                   aria-label="Add video to room"
                   tabIndex={-1}
-                  disabled={!canAddVideos}
-                  className="inline-flex min-w-9 shrink-0 items-center cursor-pointer justify-center border-l border-foreground/10 bg-blue-600 px-2 text-white transition hover:bg-blue-700 active:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-blue-600 sm:min-w-10 sm:px-2.5"
+                  className="inline-flex min-w-9 shrink-0 items-center cursor-pointer justify-center border-l border-foreground/10 bg-blue-600 px-2 text-white transition hover:bg-blue-700 active:bg-blue-800 sm:min-w-10 sm:px-2.5"
                 >
                   <AppIcon
                     icon="lucide:plus"
@@ -163,8 +148,6 @@ export function RoomPageHeader({
               <RoomYouTubeSearchInput
                 onPick={onSearchPick}
                 sizingClass="min-w-0 flex-1"
-                disabled={!canAddVideos}
-                disabledTitle={lockedTooltip}
               />
             </div>
           </div>

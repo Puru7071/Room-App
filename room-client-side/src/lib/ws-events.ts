@@ -63,6 +63,39 @@ export type QueueAddedPayload = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Video-add requests (broadcaster carousel companion)                 */
+/* ------------------------------------------------------------------ */
+
+export type VideoAddRequestWire = {
+  id: string;
+  roomId: string;
+  userId: string;
+  userName: string;
+  videoId: string;
+  /** ISO-8601. */
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type AddRequestListPayload = {
+  roomId: string;
+  requests: VideoAddRequestWire[];
+};
+export type AddRequestCreatedPayload = { request: VideoAddRequestWire };
+export type AddRequestExpiredPayload = { requestId: string; roomId: string };
+export type AddRequestApprovedPayload = {
+  requestId: string;
+  roomId: string;
+  videoId: string;
+};
+export type AddRequestRejectedPayload = {
+  requestId: string;
+  roomId: string;
+  videoId: string;
+};
+export type AddRequestRemovedPayload = { requestId: string; roomId: string };
+
+/* ------------------------------------------------------------------ */
 /* Playback sync                                                       */
 /* ------------------------------------------------------------------ */
 

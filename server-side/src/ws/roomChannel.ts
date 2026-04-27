@@ -13,11 +13,19 @@
 import type { Server as IOServer, Socket } from "socket.io";
 import { prisma } from "../db";
 import {
+  findAddRequest,
+  listAddRequestsForRoom,
+  removeAddRequest,
+} from "./addRequests";
+import {
   findRequest,
   listForRoom,
   removeRequest,
 } from "./joinRequests";
+import { appendQueueItem } from "../rooms/queue/queueShared";
 import type {
+  AddRequestApprovePayload,
+  AddRequestRejectPayload,
   PlaybackReportPayload,
   PlaybackSyncPayload,
   PlaybackUpdatePayload,
@@ -78,6 +86,9 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     if (isCreator) {
       const requests = listForRoom(roomId);
       socket.emit("room.request.list", { roomId, requests });
+      // Companion: pending video-add requests for the broadcaster panel.
+      const addRequests = listAddRequestsForRoom(roomId);
+      socket.emit("room.add-request.list", { roomId, requests: addRequests });
     }
 
     // Playback snapshot via peer poll. Server holds no playback state,
@@ -225,10 +236,11 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     if (!room) return;
 
     const isOwner = room.createdBy === data.userId;
-    // Private rooms: only the creator can drive playback.
-    if (room.settings?.nature === "PRIVATE" && !isOwner) return;
-    // Public rooms (or owner in either): verify they're a member or
-    // the owner. Banned / non-members get a silent drop.
+    // Authority for driving playback is governed by `editAccess`:
+    //   LIMITED → owner-only; ALL → any member (incl. owner).
+    if (room.settings?.editAccess === "LIMITED" && !isOwner) return;
+    // Either way: verify membership for non-owners. Banned / non-members
+    // get a silent drop.
     if (!isOwner) {
       const member = await prisma.roomMember.findUnique({
         where: { userId_roomId: { userId: data.userId, roomId: p.roomId } },
@@ -269,4 +281,86 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     };
     io.to(`room:${p.roomId}`).emit("room.playback.sync", sync);
   });
+
+  /* ----------------------------------------------------------------- */
+  /* Video-add requests — leader approves/rejects via these handlers.   */
+  /* ----------------------------------------------------------------- */
+
+  socket.on(
+    "room.add-request.approve",
+    async (payload: AddRequestApprovePayload) => {
+      if (typeof payload?.requestId !== "string") return;
+      const { requestId } = payload;
+
+      const found = findAddRequest(requestId);
+      if (!found) return;
+
+      // Only the room creator can approve.
+      const room = await prisma.room.findUnique({
+        where: { roomId: found.roomId },
+        select: { createdBy: true },
+      });
+      if (!room || room.createdBy !== data.userId) return;
+
+      // Persist the video into the queue using the shared helper —
+      // same transactional position assignment + lastUsedAt bump +
+      // `room.queue.added` broadcast as the direct-add path. The
+      // requester sees the video appear in their queue panel via
+      // their `onQueueAdded` handler.
+      try {
+        await appendQueueItem({
+          roomId: found.roomId,
+          videoId: found.videoId,
+          addedById: found.userId,
+          addedByName: found.userName,
+        });
+      } catch (err) {
+        console.error("[ws] add-request approve append failed:", err);
+        return;
+      }
+
+      removeAddRequest(requestId);
+
+      // Targeted: the requester gets a toast.
+      io.to(`user:${found.userId}`).emit("room.add-request.approved", {
+        requestId,
+        roomId: found.roomId,
+        videoId: found.videoId,
+      });
+      // Broadcast: leader's panel filters the card.
+      io.to(`room:${found.roomId}`).emit("room.add-request.removed", {
+        requestId,
+        roomId: found.roomId,
+      });
+    },
+  );
+
+  socket.on(
+    "room.add-request.reject",
+    async (payload: AddRequestRejectPayload) => {
+      if (typeof payload?.requestId !== "string") return;
+      const { requestId } = payload;
+
+      const found = findAddRequest(requestId);
+      if (!found) return;
+
+      const room = await prisma.room.findUnique({
+        where: { roomId: found.roomId },
+        select: { createdBy: true },
+      });
+      if (!room || room.createdBy !== data.userId) return;
+
+      removeAddRequest(requestId);
+
+      io.to(`user:${found.userId}`).emit("room.add-request.rejected", {
+        requestId,
+        roomId: found.roomId,
+        videoId: found.videoId,
+      });
+      io.to(`room:${found.roomId}`).emit("room.add-request.removed", {
+        requestId,
+        roomId: found.roomId,
+      });
+    },
+  );
 }

@@ -409,7 +409,21 @@ export function getRoomQueue(roomId: string) {
   );
 }
 
-export type AddToRoomQueueResult = { item: RoomQueueWireItem };
+/**
+ * Discriminated union — the server returns one of two shapes depending
+ * on the room's `editAccess` setting and the caller's role:
+ *
+ *   - `status: "added"`           (HTTP 200): direct add. New queue
+ *                                  item in the response.
+ *   - `status: "request-pending"` (HTTP 202): non-leader in a LIMITED
+ *                                  edit-access room. Server created an
+ *                                  in-memory video-add request that
+ *                                  the leader must approve via the
+ *                                  broadcaster panel.
+ */
+export type AddToRoomQueueResult =
+  | { status: "added"; item: RoomQueueWireItem }
+  | { status: "request-pending"; requestId: string };
 
 export function addToRoomQueue(roomId: string, videoId: string) {
   return postJsonAuth<AddToRoomQueueResult>(

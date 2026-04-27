@@ -542,7 +542,7 @@ export const RoomYouTubePlayer = forwardRef<
           require pointer events. */}
       {!interactive ? (
         <div
-          className="absolute inset-0 z-10"
+          className="absolute inset-0 z-10 cursor-not-allowed"
           aria-hidden
           // Defensive: even if a stray bubble made it up to a parent,
           // stop it here.

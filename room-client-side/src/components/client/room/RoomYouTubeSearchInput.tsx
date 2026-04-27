@@ -14,10 +14,6 @@ type RoomYouTubeSearchInputProps = {
   onPick: (result: YouTubeSearchResult) => void;
   /** Tailwind sizing class — owner of the input controls width. */
   sizingClass?: string;
-  /** When true, the input is non-interactive and the dropdown is suppressed. */
-  disabled?: boolean;
-  /** Tooltip shown when the input is disabled (explains why). */
-  disabledTitle?: string;
 };
 
 const DEBOUNCE_MS = 300;
@@ -38,8 +34,6 @@ const RESULT_LIMIT = 6;
 export function RoomYouTubeSearchInput({
   onPick,
   sizingClass = "",
-  disabled = false,
-  disabledTitle,
 }: RoomYouTubeSearchInputProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<YouTubeSearchResult[]>([]);
@@ -117,8 +111,7 @@ export function RoomYouTubeSearchInput({
     });
   }
 
-  const showDropdown =
-    !disabled && open && (loading || results.length > 0 || query.trim());
+  const showDropdown = open && (loading || results.length > 0 || query.trim());
 
   return (
     <div
@@ -141,21 +134,17 @@ export function RoomYouTubeSearchInput({
           inputMode="search"
           value={query}
           onChange={(e) => {
-            if (disabled) return;
             setQuery(e.target.value);
             setOpen(true);
           }}
           onFocus={() => {
-            if (disabled) return;
             if (query.trim() || results.length > 0) setOpen(true);
           }}
-          placeholder={disabled ? "Host-only in private rooms" : "Search YouTube…"}
+          placeholder="Search YouTube…"
           autoComplete="off"
           spellCheck={false}
           tabIndex={-1}
-          disabled={disabled}
-          title={disabled ? disabledTitle : undefined}
-          className="min-w-0 flex-1 border-0 bg-input-bg/70 py-2 pl-2 pr-2 text-xs font-medium text-foreground outline-none ring-0 placeholder:text-muted focus:ring-0 disabled:cursor-not-allowed disabled:opacity-60 sm:py-2.5 sm:pl-2.5 sm:text-sm"
+          className="min-w-0 flex-1 border-0 bg-input-bg/70 py-2 pl-2 pr-2 text-xs font-medium text-foreground outline-none ring-0 placeholder:text-muted focus:ring-0 sm:py-2.5 sm:pl-2.5 sm:text-sm"
         />
       </div>
 

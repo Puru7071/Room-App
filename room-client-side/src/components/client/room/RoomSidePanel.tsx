@@ -5,6 +5,7 @@ import { AppIcon } from "@/components/icons/AppIcon";
 import type { RoomQueueEntry } from "@/lib/room-types";
 import { ChatView } from "./panels/ChatView";
 import { QueueView, type QueueViewProps } from "./panels/QueueView";
+import { RoomParticlesBackground } from "./panels/RoomParticlesBackground";
 import { VideoCallsView } from "./panels/VideoCallsView";
 
 /**
@@ -72,10 +73,17 @@ export function RoomSidePanel({
   const [tab, setTab] = useState<SidePanelTab>("queue");
 
   return (
+    // Outer panel is `relative` so the shared particle canvas can sit
+    // behind every tab as an absolute fill. Hoisting the background
+    // here (instead of inside each panel view) keeps the canvas mounted
+    // across tab switches — toggling between Queue / Chat / Calls only
+    // swaps the foreground content while the drift animation continues
+    // uninterrupted.
     <div
-      className={`flex h-full rounded-xl min-h-0 flex-col overflow-hidden border border-border bg-zinc-100 text-foreground shadow-sm dark:border-zinc-800 dark:bg-[#0f0f0f] dark:text-zinc-100 ${className}`}
+      className={`relative flex h-full rounded-xl min-h-0 flex-col overflow-hidden border border-border bg-zinc-100 text-foreground shadow-sm dark:border-zinc-800 dark:bg-[#0f0f0f] dark:text-zinc-100 ${className}`}
     >
-      <div className="flex shrink-0 items-center justify-between gap-2 px-2.5 py-2 sm:px-3">
+      <RoomParticlesBackground id="side-panel-particles" />
+      <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-2.5 py-2 sm:px-3">
         <div
           role="tablist"
           aria-label="Side panel"
@@ -99,7 +107,7 @@ export function RoomSidePanel({
         ) : null}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {tab === "queue" ? (
           <QueueView
             past={past}
@@ -108,6 +116,7 @@ export function RoomSidePanel({
             sessionStarted={sessionStarted}
             phase={phase}
             onJump={canControlPlayback ? onJump : undefined}
+            canControlPlayback={canControlPlayback}
             loading={queueLoading}
           />
         ) : tab === "chat" ? (
@@ -175,7 +184,7 @@ function LoopButton({
       }
       className={[
         "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40",
-        canEdit ? "cursor-pointer" : "cursor-default",
+        canEdit ? "cursor-pointer" : "cursor-not-allowed",
         on
           ? "border-blue-600 bg-blue-600 text-white shadow-sm"
           : "border-border bg-card text-muted dark:bg-zinc-900 dark:text-zinc-500",

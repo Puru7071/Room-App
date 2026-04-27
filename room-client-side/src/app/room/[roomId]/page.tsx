@@ -18,7 +18,7 @@ import { RoomAmbientBackdrop } from "@/components/client/room/RoomAmbientBackdro
 import { RoomNowPlayingCard } from "@/components/client/room/RoomNowPlayingCard";
 import { RoomPageHeader } from "@/components/client/room/RoomPageHeader";
 import { RoomPendingState } from "@/components/client/room/RoomPendingState";
-import { RoomRequestsPanel } from "@/components/client/room/RoomRequestsPanel";
+import { RoomBroadcasterPanel } from "@/components/client/room/RoomBroadcasterPanel";
 import { RoomSidePanel } from "@/components/client/room/RoomSidePanel";
 import { GlobalLoader } from "@/components/layout/GlobalLoader";
 import { RoomWatchLayout } from "@/components/client/room/RoomWatchLayout";
@@ -39,6 +39,7 @@ import {
 import type {
   JoinRequestWire,
   PlaybackSyncPayload,
+  VideoAddRequestWire,
 } from "@/lib/ws-events";
 import { getSocket } from "@/lib/ws-client";
 import { DEFAULT_ROOM_YOUTUBE_VIDEO_ID } from "@/lib/app-constants";
@@ -144,6 +145,8 @@ export default function RoomPage() {
   const [joinStatus, setJoinStatus] = useState<JoinStatus>("joining");
   /** Pending join requests visible to the leader. Populated by WS events. */
   const [requests, setRequests] = useState<JoinRequestWire[]>([]);
+  /** Pending video-add requests (leader-only). Populated by WS events. */
+  const [addRequests, setAddRequests] = useState<VideoAddRequestWire[]>([]);
   /**
    * `true` while the persisted queue is being fetched from the server
    * after the user joins. Drives the queue-tab skeleton.
@@ -210,10 +213,12 @@ export default function RoomPage() {
   }, [roomId]);
 
   const isOwner = Boolean(user && room && room.createdBy === user.userId);
-  // Single boolean drives both the server-emit gate AND the UI lockout
-  // for non-leaders in private rooms. Public rooms: anyone can drive
-  // playback. Private rooms: only the creator.
-  const canControlPlayback = isOwner || settings?.nature === "PUBLIC";
+  // Authority is governed by `editAccess`, NOT `nature`:
+  //   ALL     → everyone can pause/play/scrub/jump and add directly.
+  //   LIMITED → only the owner can; non-owners' top-bar adds become
+  //             video-add requests (handled server-side in addToQueue).
+  // `nature` only governs join admission, not playback authority.
+  const canControlPlayback = isOwner || settings?.editAccess === "ALL";
 
   /* --------------- playback sync state (refs only) --------------- */
 
@@ -333,13 +338,44 @@ export default function RoomPage() {
         state: playState,
       });
     },
+    /* ---- video-add requests (broadcaster panel) ---- */
+    onAddRequestList: (rs) => setAddRequests(rs),
+    onAddRequestCreated: (r) =>
+      setAddRequests((prev) => (prev.some((p) => p.id === r.id) ? prev : [...prev, r])),
+    onAddRequestExpired: (id) =>
+      setAddRequests((prev) => prev.filter((r) => r.id !== id)),
+    onAddRequestRemoved: (id) => {
+      // Single source of truth for "this video-add request is gone" —
+      // fired on the room channel for both approve and reject. Filters
+      // the card out of the leader's panel state. The requester also
+      // receives this broadcast (they're in the room channel) but
+      // there's no listener wiring it to UI on their side — toasts
+      // come via the user-targeted approved/rejected events below.
+      setAddRequests((prev) => prev.filter((r) => r.id !== id));
+    },
+    onAddRequestApproved: () => {
+      // I'm the requester: my add was approved. Server already
+      // broadcast `room.queue.added` so the new video lands in my
+      // queue via the existing onQueueAdded handler — we just toast.
+      toast.success("Your video was added.");
+    },
+    onAddRequestRejected: () => {
+      // I'm the requester: my add was rejected. Soft toast, no redirect.
+      toast.error("Host declined your video.");
+    },
   });
 
-  const handleApproveRequest = useCallback((requestId: string) => {
+  const handleApproveJoin = useCallback((requestId: string) => {
     getSocket().emit("room.request.approve", { requestId });
   }, []);
-  const handleRejectRequest = useCallback((requestId: string) => {
+  const handleRejectJoin = useCallback((requestId: string) => {
     getSocket().emit("room.request.reject", { requestId });
+  }, []);
+  const handleApproveAdd = useCallback((requestId: string) => {
+    getSocket().emit("room.add-request.approve", { requestId });
+  }, []);
+  const handleRejectAdd = useCallback((requestId: string) => {
+    getSocket().emit("room.add-request.reject", { requestId });
   }, []);
 
   // Set the browser tab title from the canonical server name. Restored
@@ -510,17 +546,28 @@ export default function RoomPage() {
     };
   }, [requestFreshSnapshot]);
 
-  // Helper: POST a videoId to the server. Server saves to DB and
-  // broadcasts a `room.queue.added` WS event to all room members
-  // (including us) — `onQueueAdded` above does the local reducer
-  // dispatch when that broadcast arrives. We deliberately don't
-  // dispatch here; the WS roundtrip is the single source of truth.
+  // Helper: POST a videoId to the server. Two outcomes:
+  //   - `status: "added"`           direct add. Server broadcasts
+  //                                  `room.queue.added`, our
+  //                                  `onQueueAdded` handler dispatches
+  //                                  the reducer. No local optimism.
+  //   - `status: "request-pending"` LIMITED edit-access room and we're
+  //                                  not the leader. Server enqueued
+  //                                  a video-add request for the
+  //                                  leader to approve via the
+  //                                  broadcaster panel.
+  // Either way: clear the input.
   const postAddVideo = useCallback(
     async (videoId: string) => {
       const result = await addToRoomQueue(roomId, videoId);
-      if (!result.ok) toast.error(result.error);
-      // On success: clear the URL input so the bar returns to empty.
-      else dispatch({ type: "SET_VIDEO_URL", value: "" });
+      if (!result.ok) {
+        toast.error(result.error);
+        return;
+      }
+      if (result.status === "request-pending") {
+        toast.success("Sent to the host for approval.");
+      }
+      dispatch({ type: "SET_VIDEO_URL", value: "" });
     },
     [roomId],
   );
@@ -637,7 +684,6 @@ export default function RoomPage() {
           isOwner={isOwner}
           settings={settings}
           onSettingsUpdated={setSettings}
-          canAddVideos={canControlPlayback}
         />
 
         <main className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -695,11 +741,14 @@ export default function RoomPage() {
               />
             }
             bottomPanel={
-              <RoomRequestsPanel
+              <RoomBroadcasterPanel
                 isOwner={isOwner}
-                requests={requests}
-                onApprove={handleApproveRequest}
-                onReject={handleRejectRequest}
+                joinRequests={requests}
+                addRequests={addRequests}
+                onApproveJoin={handleApproveJoin}
+                onRejectJoin={handleRejectJoin}
+                onApproveAdd={handleApproveAdd}
+                onRejectAdd={handleRejectAdd}
               />
             }
           />

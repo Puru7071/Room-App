@@ -97,6 +97,43 @@ export type QueueItemWire = {
 export type QueueAddedPayload = { item: QueueItemWire };
 
 /* ------------------------------------------------------------------ */
+/* Video-add requests (broadcast carousel — companion to JoinRequest)  */
+/* ------------------------------------------------------------------ */
+
+export type VideoAddRequestWire = {
+  id: string;
+  roomId: string;
+  userId: string;
+  userName: string;
+  videoId: string;
+  /** ISO-8601. */
+  createdAt: string;
+  expiresAt: string;
+};
+
+export type AddRequestListPayload = {
+  roomId: string;
+  requests: VideoAddRequestWire[];
+};
+export type AddRequestCreatedPayload = { request: VideoAddRequestWire };
+export type AddRequestExpiredPayload = { requestId: string; roomId: string };
+export type AddRequestApprovedPayload = {
+  requestId: string;
+  roomId: string;
+  videoId: string;
+};
+export type AddRequestRejectedPayload = {
+  requestId: string;
+  roomId: string;
+  videoId: string;
+};
+export type AddRequestRemovedPayload = { requestId: string; roomId: string };
+
+/** Client-emitted approve/reject for video-add requests. */
+export type AddRequestApprovePayload = { requestId: string };
+export type AddRequestRejectPayload = { requestId: string };
+
+/* ------------------------------------------------------------------ */
 /* Playback sync                                                       */
 /* ------------------------------------------------------------------ */
 

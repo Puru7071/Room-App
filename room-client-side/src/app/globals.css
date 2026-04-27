@@ -232,15 +232,47 @@ html.dark .room-queue-scroll::-webkit-scrollbar-thumb:hover {
   animation: room-corner-drift 32s linear infinite;
 }
 
-html.dark .room-corner-ripple {
+html.dark .room-corner-ripple,
+html.dark .room-corner-ripple-flip {
   --room-ripple-color: rgba(255, 255, 255, 0.4);
   --room-ripple-fade: rgba(255, 255, 255, 0);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .room-corner-ripple {
+  .room-corner-ripple,
+  .room-corner-ripple-flip {
     animation: none;
   }
+}
+
+/* Mirror image of `.room-corner-ripple`: dots are densest at the
+   top-left, fading to transparent at the bottom-right. Used by the
+   "Room Broadcaster" panel so when stacked under the now-playing
+   card (which fades the opposite direction) the two patterns mirror.
+   Same gradient + grid + drift animation; only the mask direction
+   inverts. */
+.room-corner-ripple-flip {
+  background-image: radial-gradient(
+    circle,
+    var(--room-ripple-color, rgba(24, 24, 27, 0.4)) 0.5px,
+    var(--room-ripple-fade, rgba(24, 24, 27, 0)) 1.5px
+  );
+  background-size: 18px 18px;
+  -webkit-mask-image: linear-gradient(
+    to bottom right,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(0, 0, 0, 0.2) 35%,
+    rgba(0, 0, 0, 0) 65%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom right,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(0, 0, 0, 0.2) 35%,
+    rgba(0, 0, 0, 0) 65%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  animation: room-corner-drift 32s linear infinite;
 }
 
 /* Indeterminate sliding-bar animation for the global route loader.

@@ -1,6 +1,6 @@
 /**
  * In-memory store of pending join requests, plus the WS handlers that
- * mutate it. Requests live for 5 minutes and are wiped on TTL expiry,
+ * mutate it. Requests live for 3 minutes and are wiped on TTL expiry,
  * approval, or rejection. **No DB persistence.** A server restart
  * forfeits open requests by design — they're transient signals.
  *
@@ -19,8 +19,8 @@ import type { Server as IOServer } from "socket.io";
 import { randomUUID } from "node:crypto";
 import type { JoinRequestWire } from "./types";
 
-/** 5 minutes in milliseconds. */
-export const JOIN_REQUEST_TTL_MS = 5 * 60 * 1000;
+/** 3 minutes in milliseconds. */
+export const JOIN_REQUEST_TTL_MS = 3 * 60 * 1000;
 /** How often the sweeper wakes to evict expired rows. */
 const SWEEP_INTERVAL_MS = 30 * 1000;
 

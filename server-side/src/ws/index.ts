@@ -17,6 +17,7 @@ import jwt from "jsonwebtoken";
 import { Server as IOServer } from "socket.io";
 import { registerRoomChannelHandlers } from "./roomChannel";
 import { startSweeper } from "./joinRequests";
+import { startAddRequestSweeper } from "./addRequests";
 import type { SocketData } from "./types";
 
 let ioRef: IOServer | null = null;
@@ -88,6 +89,7 @@ export function attachWsServer(httpServer: HttpServer, corsOrigin: RegExp | stri
   });
 
   startSweeper(io);
+  startAddRequestSweeper(io);
 
   console.log("[ws] socket.io attached");
 }
