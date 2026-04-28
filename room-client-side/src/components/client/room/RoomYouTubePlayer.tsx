@@ -23,6 +23,18 @@ export type RoomYouTubePlayerHandle = {
   /** Raw YT player state (1 PLAYING, 2 PAUSED, 3 BUFFERING, etc.). */
   getYTState(): number;
   isReady(): boolean;
+  /**
+   * Jump to `index` in the playlist AND start at `time` seconds, with
+   * the desired play/pause state. Used by `applySync` so a remote
+   * snapshot lands at the correct video AND time atomically — calling
+   * `seekTo` separately would race the prop-driven effect's
+   * `loadPlaylist(..., 0)` and reset the playhead to 0.
+   *
+   * Updates the internal `ytCurrentIndexRef` so the prop-driven
+   * playlist effect, which fires after the caller dispatches
+   * `ADVANCE_TO`, sees `indexMatch=true` and no-ops.
+   */
+  loadAndSeek(index: number, time: number, play: boolean): void;
 };
 
 type RoomYouTubePlayerProps = {
@@ -58,6 +70,15 @@ type RoomYouTubePlayerProps = {
   onBufferLag?: (lostSeconds: number) => void;
   /** Fires once the YT iframe is ready. */
   onReady?: () => void;
+  /**
+   * Fires the FIRST time YT enters the PLAYING state for this session
+   * — i.e., the video has actually loaded and begun playback past the
+   * autoplay startup window. Different from `onReady` (iframe-ready)
+   * because seekTo / loadPlaylist applied during the autoplay startup
+   * can be racy; waiting until first PLAYING is the safe gate for
+   * "video is loaded enough to apply remote sync".
+   */
+  onFirstPlay?: () => void;
 };
 
 type YTPlayer = {
@@ -97,6 +118,7 @@ export const RoomYouTubePlayer = forwardRef<
     onSeek,
     onBufferLag,
     onReady,
+    onFirstPlay,
   },
   ref,
 ) {
@@ -135,12 +157,24 @@ export const RoomYouTubePlayer = forwardRef<
   // doesn't tear-down/rebuild its interval every render.
   const onSeekRef = useRef(onSeek);
   const onBufferLagRef = useRef(onBufferLag);
+  const onFirstPlayRef = useRef(onFirstPlay);
   useEffect(() => {
     onSeekRef.current = onSeek;
   }, [onSeek]);
   useEffect(() => {
     onBufferLagRef.current = onBufferLag;
   }, [onBufferLag]);
+  useEffect(() => {
+    onFirstPlayRef.current = onFirstPlay;
+  }, [onFirstPlay]);
+
+  /**
+   * Latched once when YT first reaches PLAYING for the current
+   * session. Used to fire `onFirstPlay` exactly once per session —
+   * NOT per state-1 event, since loadPlaylist / playVideoAt produce
+   * additional PLAYING transitions.
+   */
+  const firstPlayFiredRef = useRef(false);
 
   // Time-discontinuity polling — the reliable seek detector. Every
   // 500ms while phase=playing, read the YT player's currentTime and
@@ -217,6 +251,7 @@ export const RoomYouTubePlayer = forwardRef<
     bufferStartWallClockRef.current = null;
     bufferStartYTTimeRef.current = null;
     wasPausedRef.current = false;
+    firstPlayFiredRef.current = false;
     ytIdsRef.current = [];
     ytCurrentIndexRef.current = -1;
     isReadyRef.current = false;
@@ -330,6 +365,37 @@ export const RoomYouTubePlayer = forwardRef<
     isReady() {
       return isReadyRef.current;
     },
+    loadAndSeek(index, time, play) {
+      const player = playerRef.current;
+      if (!player) return;
+      const ids = ytIdsRef.current;
+      if (index < 0 || index >= ids.length) return;
+      try {
+        // `loadPlaylist(ids, index, startSeconds)` reloads the iframe's
+        // playlist and starts the requested video at the requested
+        // time in one call — no separate seekTo needed and no
+        // playhead-reset race.
+        player.loadPlaylist(ids, index, time);
+        ytCurrentIndexRef.current = index;
+        // Suppress the autoplay-induced PLAYING that loadPlaylist
+        // triggers — same pattern the prop-driven effect uses.
+        suppressNextPlayEventRef.current = true;
+        if (!play) {
+          // loadPlaylist auto-plays. Defer the pause until YT has
+          // applied the load — calling pauseVideo synchronously gets
+          // ignored because the player isn't yet in a playing state.
+          window.setTimeout(() => {
+            try {
+              playerRef.current?.pauseVideo();
+            } catch {
+              /* noop */
+            }
+          }, 100);
+        }
+      } catch {
+        /* iframe may be detaching */
+      }
+    },
   }), []);
 
   const defaultSrc = useMemo(
@@ -428,6 +494,16 @@ export const RoomYouTubePlayer = forwardRef<
           }
 
           if (state === 1 /* PLAYING */) {
+            // First-play latch — fires exactly once per session, on the
+            // initial transition from autoplay-startup to PLAYING. The
+            // page uses this (NOT onReady) to gate the snapshot
+            // request, so the request lands when the iframe is truly
+            // playing — past the autoplay startup window where
+            // seekTo / loadPlaylist startSeconds are race-prone.
+            if (!firstPlayFiredRef.current) {
+              firstPlayFiredRef.current = true;
+              onFirstPlayRef.current?.();
+            }
             // Buffer-lag detection only. Seeks aren't caught here —
             // by the time YT fires BUFFERING after a user scrub,
             // getCurrentTime() already returns the new (post-scrub)

@@ -9,6 +9,10 @@ import type {
   AddRequestListPayload,
   AddRequestRejectedPayload,
   AddRequestRemovedPayload,
+  ChatHistoryPayload,
+  ChatMessagePayload,
+  ChatMessageWire,
+  ChatTypingBroadcastPayload,
   JoinRequestWire,
   MemberJoinedPayload,
   PlaybackPollPayload,
@@ -60,9 +64,10 @@ type Handlers = {
   onPlaybackSync?: (payload: PlaybackSyncPayload) => void;
   /**
    * Server is asking us to report our current playback state so a
-   * just-subscribed peer can be brought up to date. Handler reads
-   * the local YT player + reducer index and emits
-   * `room.playback.report-state`.
+   * peer who emitted `room.playback.request-snapshot` can be brought
+   * up to date. Handler reads the local YT player + reducer index
+   * and emits `room.playback.report-state`, echoing
+   * `payload.requesterUserId` so the server can target the reply.
    */
   onPlaybackPollState?: (payload: PlaybackPollPayload) => void;
   /* --------- video-add requests (broadcaster carousel) ---------- */
@@ -83,6 +88,17 @@ type Handlers = {
    * targeted approved/rejected events.
    */
   onAddRequestRemoved?: (requestId: string) => void;
+  /* --------- chat (group text) ---------- */
+  /** Initial snapshot of the in-memory ring buffer, on subscribe. */
+  onChatHistory?: (messages: ChatMessageWire[]) => void;
+  /** A new chat message was broadcast (sender NOT included — they
+   *  rely on the emit-with-ack callback to upgrade their optimistic
+   *  insert from "pending" to "delivered"). */
+  onChatMessage?: (message: ChatMessageWire) => void;
+  /** A peer started typing. */
+  onChatTypingStart?: (payload: ChatTypingBroadcastPayload) => void;
+  /** A peer stopped typing (explicit, or via TTL/disconnect synth). */
+  onChatTypingStop?: (payload: ChatTypingBroadcastPayload) => void;
 };
 
 /**
@@ -172,6 +188,22 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       if (p.roomId !== roomId) return;
       handlersRef.current.onAddRequestRejected?.(p);
     };
+    const onChatHistory = (p: ChatHistoryPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onChatHistory?.(p.messages);
+    };
+    const onChatMessage = (p: ChatMessagePayload) => {
+      if (p.message.roomId !== roomId) return;
+      handlersRef.current.onChatMessage?.(p.message);
+    };
+    const onChatTypingStart = (p: ChatTypingBroadcastPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onChatTypingStart?.(p);
+    };
+    const onChatTypingStop = (p: ChatTypingBroadcastPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onChatTypingStop?.(p);
+    };
 
     socket.on("room.request.list", onList);
     socket.on("room.request.created", onCreated);
@@ -189,6 +221,10 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
     socket.on("room.add-request.removed", onAddRemoved);
     socket.on("room.add-request.approved", onAddApproved);
     socket.on("room.add-request.rejected", onAddRejected);
+    socket.on("room.chat.history", onChatHistory);
+    socket.on("room.chat.message", onChatMessage);
+    socket.on("room.chat.typing.start", onChatTypingStart);
+    socket.on("room.chat.typing.stop", onChatTypingStop);
 
     // Subscribe both on initial mount AND on every reconnect — Socket.IO
     // forgets which channels the client was in across a disconnect.
@@ -213,6 +249,10 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       socket.off("room.add-request.removed", onAddRemoved);
       socket.off("room.add-request.approved", onAddApproved);
       socket.off("room.add-request.rejected", onAddRejected);
+      socket.off("room.chat.history", onChatHistory);
+      socket.off("room.chat.message", onChatMessage);
+      socket.off("room.chat.typing.start", onChatTypingStart);
+      socket.off("room.chat.typing.stop", onChatTypingStop);
       socket.off("connect", subscribe);
     };
   }, [roomId]);

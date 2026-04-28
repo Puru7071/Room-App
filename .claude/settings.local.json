@@ -24,7 +24,9 @@
       "WebFetch(domain:api.github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(awk 'NR>=140 && NR<=153 { for\\(i=1;i<=length\\($0\\);i++\\){c=substr\\($0,i,1\\); if\\(c==\"\\\\t\"\\)printf\"\\\\\\\\t\";else printf\"%s\",c} printf\"\\\\n\" }' src/components/client/room/panels/QueueView.tsx)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); names=list\\(d.get\\('icons',{}\\).keys\\(\\)\\); print\\('\\\\n'.join\\([n for n in names if 'emoji' in n.lower\\(\\) or 'smile' in n.lower\\(\\) or 'happy' in n.lower\\(\\) or 'face' in n.lower\\(\\)]\\)\\)\")",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/Users/purubhargava/Desktop/Projects/Room App/room-client-side/node_modules/@iconify-json/lucide/icons.json'\\)\\); names=list\\(d.get\\('icons',{}\\).keys\\(\\)\\); print\\('\\\\n'.join\\([n for n in names if 'smile' in n.lower\\(\\)][:20]\\)\\)\")"
     ]
   }
 }

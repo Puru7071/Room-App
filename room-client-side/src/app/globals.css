@@ -327,3 +327,30 @@ html.dark .room-corner-ripple-flip {
     width: 50%;
   }
 }
+
+/* Chat composer's emoji-trigger icon. A gentle continuous wiggle so
+   the button reads as "alive" — same intent as the header's looping
+   line-md icons (cog-loop / sunny-filled-loop), except the icon itself
+   is `lucide:smile` so its stroke weight + color exactly matches
+   `lucide:send` next to it. The animation is a slow back-and-forth
+   tilt, intentionally subtle so it doesn't compete with the chat. */
+@keyframes chat-emoji-tilt {
+  0%,
+  100% {
+    transform: rotate(-6deg);
+  }
+  50% {
+    transform: rotate(6deg);
+  }
+}
+
+.chat-emoji-tilt {
+  animation: chat-emoji-tilt 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-emoji-tilt {
+    animation: none;
+  }
+}

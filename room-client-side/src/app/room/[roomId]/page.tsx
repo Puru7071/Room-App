@@ -37,6 +37,8 @@ import {
   type RoomSettingsDetail,
 } from "@/lib/api";
 import type {
+  ChatMessageWire,
+  ChatSendAck,
   JoinRequestWire,
   PlaybackSyncPayload,
   VideoAddRequestWire,
@@ -148,10 +150,36 @@ export default function RoomPage() {
   /** Pending video-add requests (leader-only). Populated by WS events. */
   const [addRequests, setAddRequests] = useState<VideoAddRequestWire[]>([]);
   /**
+   * Local chat list. Wraps `ChatMessageWire` with delivery state so
+   * the UI can render single-tick (pending) vs double-tick
+   * (delivered) for the sender's own messages. The page uses
+   * optimistic insert: send → unshift with status="pending" + a
+   * client-generated `clientNonce` → server's emit-with-ack callback
+   * upgrades to status="delivered" with the canonical server `id`.
+   */
+  type LocalChatMessage = ChatMessageWire & {
+    status: "pending" | "delivered";
+    clientNonce?: string;
+  };
+  const [chatMessages, setChatMessages] = useState<LocalChatMessage[]>([]);
+  /**
+   * Map of currently-typing peers. Receiver tracks via TTL safety
+   * (5 s) — if a peer's `typing.stop` is lost, we still drop them.
+   */
+  const [typers, setTypers] = useState<Record<string, { name: string }>>({});
+  const typerTimeoutsRef = useRef<Record<string, number>>({});
+  /**
    * `true` while the persisted queue is being fetched from the server
    * after the user joins. Drives the queue-tab skeleton.
    */
   const [queueLoading, setQueueLoading] = useState(false);
+  /**
+   * Mirrors the YT iframe's `onReady`. State (not just a ref) so the
+   * snapshot-request effect can react when both the queue lands AND
+   * the player becomes ready. Reset when the playback session ends so
+   * a fresh session re-arms the request.
+   */
+  const [playerReady, setPlayerReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -169,48 +197,53 @@ export default function RoomPage() {
 
       // Now actually try to JOIN. Public rooms or the leader come back
       // `joined`/`already-member` instantly; private rooms come back
-      // `pending` and we render the waiting overlay until WS flips it.
+      // `pending` and we render the waiting overlay until WS flips it
+      // via `room.request.approved`.
       const joinResult = await joinRoom(roomId);
       if (cancelled) return;
       if (!joinResult.ok) {
-        // Surface a toast but don't kick to "not found" — the room
-        // exists; joining is a separate failure mode.
         toast.error(joinResult.error);
         setJoinStatus("rejected");
         return;
       }
-      const nextStatus =
-        joinResult.status === "pending" ? "pending" : "joined";
-      setJoinStatus(nextStatus);
-
-      // Once we're actually inside the room (not pending), pull the
-      // persisted queue and seed the local reducer. The skeleton flag
-      // covers the latency window between "joined" and "queue rendered".
-      if (nextStatus === "joined") {
-        setQueueLoading(true);
-        const queueResult = await getRoomQueue(roomId);
-        if (cancelled) return;
-        if (queueResult.ok) {
-          for (const item of queueResult.items) {
-            dispatch({
-              type: "ADD_VIDEO",
-              entry: {
-                clipId: item.id,
-                videoId: item.videoId,
-                addedByName: item.addedByName,
-              },
-            });
-          }
-        } else {
-          toast.error(queueResult.error);
-        }
-        setQueueLoading(false);
-      }
+      setJoinStatus(joinResult.status === "pending" ? "pending" : "joined");
     })();
     return () => {
       cancelled = true;
     };
   }, [roomId]);
+
+  // Queue load. Lives in its own effect keyed on `joinStatus` so that
+  // pending-then-approved users (private rooms) actually load the queue
+  // when their status flips to "joined" via WS — the previous one-shot
+  // `[roomId]` mount effect skipped them entirely.
+  useEffect(() => {
+    if (joinStatus !== "joined") return;
+    let cancelled = false;
+    (async () => {
+      setQueueLoading(true);
+      const queueResult = await getRoomQueue(roomId);
+      if (cancelled) return;
+      if (queueResult.ok) {
+        for (const item of queueResult.items) {
+          dispatch({
+            type: "ADD_VIDEO",
+            entry: {
+              clipId: item.id,
+              videoId: item.videoId,
+              addedByName: item.addedByName,
+            },
+          });
+        }
+      } else {
+        toast.error(queueResult.error);
+      }
+      setQueueLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, joinStatus]);
 
   const isOwner = Boolean(user && room && room.createdBy === user.userId);
   // Authority is governed by `editAccess`, NOT `nature`:
@@ -219,6 +252,8 @@ export default function RoomPage() {
   //             video-add requests (handled server-side in addToQueue).
   // `nature` only governs join admission, not playback authority.
   const canControlPlayback = isOwner || settings?.editAccess === "ALL";
+  // Chat send authority. `chatRights: LIMITED` → owner-only chat.
+  const canSendChat = isOwner || settings?.chatRights === "ALL";
 
   /* --------------- playback sync state (refs only) --------------- */
 
@@ -243,16 +278,18 @@ export default function RoomPage() {
   const lastResyncAtRef = useRef<number>(0);
 
   /**
-   * Re-emit `room.subscribe` so the server polls a peer for the current
-   * state — shared by three triggers: navigator.onLine flip, player
-   * buffer-lag, and (implicitly via useRoomSocket) the Socket.IO
-   * `connect` reconnect. The 1s debounce collapses near-simultaneous
-   * triggers into a single emit.
+   * Emit `room.playback.request-snapshot` so the server polls a peer
+   * and routes their report back to us. Shared by four triggers:
+   *   - first-time arm when queue + player are both ready
+   *   - navigator.onLine flip (offline → online recovery)
+   *   - player buffer-lag (stalled iframe)
+   *   - Socket.IO `connect` reconnect
+   * The 1s debounce collapses near-simultaneous triggers into one emit.
    */
   const requestFreshSnapshot = useCallback(() => {
     if (Date.now() - lastResyncAtRef.current < 1000) return;
     lastResyncAtRef.current = Date.now();
-    getSocket().emit("room.subscribe", { roomId });
+    getSocket().emit("room.playback.request-snapshot", { roomId });
   }, [roomId]);
 
   // WebSocket subscription. Mounted as soon as we have a roomId so the
@@ -318,24 +355,28 @@ export default function RoomPage() {
       }
       applySync(payload);
     },
-    onPlaybackPollState: () => {
-      // Server is asking us to report our current state so a fresh
-      // subscriber can be brought up to date. Read the YT player + the
-      // reducer's currentIndex and emit a report. The resulting
-      // server broadcast comes back to us too — the lastSyncRef gate
-      // makes our own applySync a no-op.
+    onPlaybackPollState: (p) => {
+      // Server is asking us to report our current state for a peer
+      // who emitted `room.playback.request-snapshot`. Read the YT
+      // player + reducer's currentIndex; stamp `capturedAt` right
+      // next to the `getCurrentTime()` call so the requester's drift
+      // compensation can include the peer→server hop. Echo
+      // `requesterUserId` so the server can route the targeted reply.
       const handle = playerHandleRef.current;
       if (!handle?.isReady() || !state.nowPlaying) return;
       const ytState = handle.getYTState();
       const playState: "playing" | "paused" =
         ytState === 1 || ytState === 3 ? "playing" : "paused";
       const time = handle.getCurrentTime();
+      const capturedAt = Date.now();
       getSocket().emit("room.playback.report-state", {
         roomId,
         videoId: state.nowPlaying.videoId,
         position: currentIndex,
         time,
         state: playState,
+        capturedAt,
+        requesterUserId: p.requesterUserId,
       });
     },
     /* ---- video-add requests (broadcaster panel) ---- */
@@ -363,6 +404,41 @@ export default function RoomPage() {
       // I'm the requester: my add was rejected. Soft toast, no redirect.
       toast.error("Host declined your video.");
     },
+    /* ---- chat ---- */
+    onChatHistory: (msgs) =>
+      setChatMessages(msgs.map((m) => ({ ...m, status: "delivered" }))),
+    onChatMessage: (m) =>
+      // Dedupe by id — guards against the rare case the same broadcast
+      // arrives twice (reconnect replay, etc.).
+      setChatMessages((prev) =>
+        prev.some((x) => x.id === m.id)
+          ? prev
+          : [...prev, { ...m, status: "delivered" }],
+      ),
+    onChatTypingStart: ({ userId, userName }) => {
+      setTypers((prev) => ({ ...prev, [userId]: { name: userName } }));
+      // 5 s safety TTL — peer's `typing.stop` may be lost on
+      // reconnect, server's disconnect synth-stop covers most cases
+      // but this is the final belt-and-suspenders.
+      window.clearTimeout(typerTimeoutsRef.current[userId]);
+      typerTimeoutsRef.current[userId] = window.setTimeout(() => {
+        setTypers((prev) => {
+          const next = { ...prev };
+          delete next[userId];
+          return next;
+        });
+        delete typerTimeoutsRef.current[userId];
+      }, 5000);
+    },
+    onChatTypingStop: ({ userId }) => {
+      window.clearTimeout(typerTimeoutsRef.current[userId]);
+      delete typerTimeoutsRef.current[userId];
+      setTypers((prev) => {
+        const next = { ...prev };
+        delete next[userId];
+        return next;
+      });
+    },
   });
 
   const handleApproveJoin = useCallback((requestId: string) => {
@@ -371,6 +447,96 @@ export default function RoomPage() {
   const handleRejectJoin = useCallback((requestId: string) => {
     getSocket().emit("room.request.reject", { requestId });
   }, []);
+  /**
+   * Send a chat message. Optimistic insert with `status="pending"`
+   * (single tick); server's emit-with-ack callback upgrades it to
+   * `status="delivered"` (double tick) using the canonical server id.
+   * On failure, the optimistic insert is rolled back and a toast
+   * surfaces the reason.
+   */
+  const handleSendChat = useCallback(
+    (body: string) => {
+      if (!user) return;
+      const trimmed = body.trim();
+      if (trimmed.length === 0 || trimmed.length > 2000) return;
+      const clientNonce = crypto.randomUUID();
+      const optimistic: LocalChatMessage = {
+        id: clientNonce, // temp; server-assigned id replaces on ack
+        roomId,
+        senderId: user.userId,
+        senderName: user.username,
+        body: trimmed,
+        createdAt: Date.now(),
+        status: "pending",
+        clientNonce,
+      };
+      setChatMessages((prev) => [...prev, optimistic]);
+      getSocket().emit(
+        "room.chat.send",
+        { roomId, body: trimmed, clientNonce },
+        (ack: ChatSendAck) => {
+          if (ack.ok) {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.clientNonce === clientNonce
+                  ? {
+                      ...m,
+                      id: ack.id,
+                      createdAt: ack.createdAt,
+                      status: "delivered",
+                      clientNonce: undefined,
+                    }
+                  : m,
+              ),
+            );
+          } else {
+            toast.error(`Couldn't send: ${ack.reason}`);
+            setChatMessages((prev) =>
+              prev.filter((m) => m.clientNonce !== clientNonce),
+            );
+          }
+        },
+      );
+    },
+    [roomId, user],
+  );
+
+  /**
+   * Emits `room.chat.typing.start` once the user has typed ≥ 4 chars
+   * (debounced to one emit per 2 s) and `room.chat.typing.stop` after
+   * 3 s of no typing OR when the input drops below the threshold.
+   * The composer calls this on every input change.
+   */
+  const lastTypingEmitRef = useRef(0);
+  const typingStopTimerRef = useRef<number | null>(null);
+  const handleTypingChange = useCallback(
+    (value: string) => {
+      const socket = getSocket();
+      if (typingStopTimerRef.current !== null) {
+        window.clearTimeout(typingStopTimerRef.current);
+        typingStopTimerRef.current = null;
+      }
+      if (value.trim().length >= 4) {
+        const now = Date.now();
+        if (now - lastTypingEmitRef.current > 2000) {
+          lastTypingEmitRef.current = now;
+          socket.emit("room.chat.typing.start", { roomId });
+        }
+        // 3 s of no further input → auto-stop. Re-set on every keypress.
+        typingStopTimerRef.current = window.setTimeout(() => {
+          lastTypingEmitRef.current = 0;
+          socket.emit("room.chat.typing.stop", { roomId });
+          typingStopTimerRef.current = null;
+        }, 3000);
+      } else if (lastTypingEmitRef.current !== 0) {
+        // Dropped below threshold — emit stop if we'd previously started.
+        lastTypingEmitRef.current = 0;
+        socket.emit("room.chat.typing.stop", { roomId });
+      }
+    },
+    [roomId],
+  );
+
   const handleApproveAdd = useCallback((requestId: string) => {
     getSocket().emit("room.add-request.approve", { requestId });
   }, []);
@@ -495,17 +661,33 @@ export default function RoomPage() {
         time: p.time,
       };
 
-      if (p.position !== currentIndex) {
-        dispatch({ type: "ADVANCE_TO", absoluteIndex: p.position });
-      }
-      // Drift compensation: what was at `time` `updatedAt` ms ago is
-      // now at `time + driftMs/1000`. Capped at 5s to bound damage
-      // from a clock that drifted.
-      const driftMs = Date.now() - p.updatedAt;
+      // Drift compensation: what the source clocked at `time` at
+      // `capturedAt` is now at `time + driftMs/1000`. We use
+      // `capturedAt` (not `updatedAt`) so the peer→server hop is
+      // included for snapshot replies — for control-event broadcasts
+      // the server stamps capturedAt to its own clock, so the formula
+      // collapses to "server→receiver" identically to the prior
+      // single-timestamp behavior. Capped at 5s to bound damage from
+      // a clock that drifted.
+      const driftMs = Date.now() - p.capturedAt;
       const targetTime =
         p.state === "playing" && driftMs > 0 && driftMs < 5000
           ? p.time + driftMs / 1000
           : p.time;
+
+      if (p.position !== currentIndex) {
+        // Jump-and-seek atomically. If we did `dispatch + seekTo`, the
+        // prop-driven `loadPlaylist(..., 0)` effect would fire on the
+        // next render and clobber our seek — that was the new-joiner
+        // "lands at 0:00 instead of host's time" bug. `loadAndSeek`
+        // bumps the player's internal index ref so the same effect
+        // sees `indexMatch=true` and no-ops. Then dispatch updates the
+        // queue panel.
+        handle.loadAndSeek(p.position, targetTime, p.state === "playing");
+        dispatch({ type: "ADVANCE_TO", absoluteIndex: p.position });
+        return;
+      }
+
       handle.seekTo(targetTime);
       if (p.state === "playing") handle.play();
       else handle.pause();
@@ -545,6 +727,60 @@ export default function RoomPage() {
       window.removeEventListener("online", handleOnline);
     };
   }, [requestFreshSnapshot]);
+
+  /**
+   * Initial snapshot request — fired exactly once per playback session,
+   * after we're "ready": joined, queue loaded, player onReady fired,
+   * and the session actually has a now-playing video to sync to. Refs
+   * (not state) for the gate so the effect doesn't loop on its own
+   * re-fire.
+   */
+  const initialSnapshotRequestedRef = useRef(false);
+  useEffect(() => {
+    if (joinStatus !== "joined") return;
+    if (queueLoading) return;
+    if (!playerReady) return;
+    if (!state.sessionStarted) return;
+    if (initialSnapshotRequestedRef.current) return;
+    initialSnapshotRequestedRef.current = true;
+    requestFreshSnapshot();
+  }, [
+    joinStatus,
+    queueLoading,
+    playerReady,
+    state.sessionStarted,
+    requestFreshSnapshot,
+  ]);
+
+  // Re-arm the snapshot request when the playback session ends — a
+  // fresh session (e.g., the queue was emptied and a new video was
+  // added) needs its own snapshot poll. Clearing `playerReady` mirrors
+  // the player's internal `isReadyRef` reset on phase exit.
+  const phaseRef = useRef(phase);
+  useEffect(() => {
+    if (phaseRef.current === "playing" && phase !== "playing") {
+      setPlayerReady(false);
+      initialSnapshotRequestedRef.current = false;
+    }
+    phaseRef.current = phase;
+  }, [phase]);
+
+  // Re-fire on socket reconnect — only if we're already in the
+  // "ready" steady-state. Otherwise the first-time effect above
+  // handles the post-reconnect snapshot once the player rebinds.
+  useEffect(() => {
+    const socket = getSocket();
+    const handleConnect = () => {
+      if (joinStatus !== "joined") return;
+      if (queueLoading) return;
+      if (!playerReady) return;
+      requestFreshSnapshot();
+    };
+    socket.on("connect", handleConnect);
+    return () => {
+      socket.off("connect", handleConnect);
+    };
+  }, [joinStatus, queueLoading, playerReady, requestFreshSnapshot]);
 
   // Helper: POST a videoId to the server. Two outcomes:
   //   - `status: "added"`           direct add. Server broadcasts
@@ -707,6 +943,11 @@ export default function RoomPage() {
                 }
                 onBufferLag={() => requestFreshSnapshot()}
                 onReady={() => {
+                  // Drain any cross-user `playback.update` that arrived
+                  // mid-load (different user scrubbed while we were
+                  // mounting). The new snapshot path uses onFirstPlay
+                  // (below) instead, but real updates can still land
+                  // here.
                   if (
                     pendingSyncRef.current &&
                     !queueLoading &&
@@ -715,6 +956,15 @@ export default function RoomPage() {
                     applySync(pendingSyncRef.current);
                     pendingSyncRef.current = null;
                   }
+                }}
+                onFirstPlay={() => {
+                  // Gate the snapshot request on "video is actually
+                  // playing" — NOT just "iframe is ready". seekTo /
+                  // loadPlaylist applied during YT's autoplay startup
+                  // (the window between onReady and first PLAYING) are
+                  // race-prone; PLAYING means YT is past that and
+                  // commands land deterministically.
+                  setPlayerReady(true);
                 }}
               />
             }
@@ -737,6 +987,12 @@ export default function RoomPage() {
                 canControlPlayback={canControlPlayback}
                 onLoopToggle={handleLoopToggle}
                 queueLoading={queueLoading}
+                chatMessages={chatMessages}
+                currentUserId={user?.userId ?? null}
+                canSendChat={canSendChat}
+                typers={typers}
+                onSendChat={handleSendChat}
+                onTypingChange={handleTypingChange}
                 className="min-h-0"
               />
             }

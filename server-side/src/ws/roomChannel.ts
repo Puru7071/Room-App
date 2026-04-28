@@ -17,6 +17,7 @@ import {
   listAddRequestsForRoom,
   removeAddRequest,
 } from "./addRequests";
+import { appendMessage, listMessages } from "./chatMessages";
 import {
   findRequest,
   listForRoom,
@@ -26,7 +27,11 @@ import { appendQueueItem } from "../rooms/queue/queueShared";
 import type {
   AddRequestApprovePayload,
   AddRequestRejectPayload,
+  ChatSendAck,
+  ChatSendPayload,
+  ChatTypingPayload,
   PlaybackReportPayload,
+  PlaybackRequestSnapshotPayload,
   PlaybackSyncPayload,
   PlaybackUpdatePayload,
   RequestApprovePayload,
@@ -34,6 +39,77 @@ import type {
   RoomSubscribePayload,
   SocketData,
 } from "./types";
+
+/**
+ * Classifies a user's relationship to a room. Drives both the
+ * `room.subscribe` admission rule (any non-`"none"`) and the
+ * "active member" branch (`"owner" | "member"`) which gates the chat
+ * channel + chat history emit. Pending users join the `room:`
+ * channel for join-flow events but NOT the `chat:` channel.
+ *
+ * One source of truth for membership shape, used by `room.subscribe`,
+ * `room.playback.request-snapshot`, and `room.chat.send`.
+ */
+type MembershipKind = "none" | "owner" | "member" | "pending";
+
+async function classifyMembership(
+  userId: string,
+  roomId: string,
+): Promise<MembershipKind> {
+  const room = await prisma.room.findUnique({
+    where: { roomId },
+    select: { createdBy: true },
+  });
+  if (!room) return "none";
+  if (room.createdBy === userId) return "owner";
+  const member = await prisma.roomMember.findUnique({
+    where: { userId_roomId: { userId, roomId } },
+  });
+  if (member && !member.isBanned) return "member";
+  if (listForRoom(roomId).some((r) => r.userId === userId)) return "pending";
+  return "none";
+}
+
+/** Backwards-compat shim: any non-"none" classification = allowed. */
+async function userMaySubscribe(
+  userId: string,
+  roomId: string,
+): Promise<boolean> {
+  return (await classifyMembership(userId, roomId)) !== "none";
+}
+
+/**
+ * Per-socket chat-send token bucket. Cap of 5, refill 1 token / 400 ms.
+ * Cheap defence against a malicious client spamming `room.chat.send`
+ * — silent drop with a `rate-limited` ack so the sender can roll back
+ * the optimistic insert.
+ */
+const CHAT_BUCKET_CAP = 5;
+const CHAT_REFILL_MS = 400;
+
+function consumeChatToken(socket: { data: SocketData }): boolean {
+  const now = Date.now();
+  const bucket = socket.data.chatBucket ?? {
+    tokens: CHAT_BUCKET_CAP,
+    lastRefill: now,
+  };
+  // Refill since last call.
+  const elapsed = now - bucket.lastRefill;
+  if (elapsed > 0) {
+    const refill = Math.floor(elapsed / CHAT_REFILL_MS);
+    if (refill > 0) {
+      bucket.tokens = Math.min(CHAT_BUCKET_CAP, bucket.tokens + refill);
+      bucket.lastRefill = bucket.lastRefill + refill * CHAT_REFILL_MS;
+    }
+  }
+  if (bucket.tokens <= 0) {
+    socket.data.chatBucket = bucket;
+    return false;
+  }
+  bucket.tokens -= 1;
+  socket.data.chatBucket = bucket;
+  return true;
+}
 
 export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
   const data = socket.data as SocketData;
@@ -47,28 +123,8 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     if (typeof payload?.roomId !== "string") return;
     const { roomId } = payload;
 
-    // Verify the user has any business subscribing — either a member
-    // already, the room creator, or has a pending request. Keeps random
-    // socket clients from snooping rooms they're unrelated to.
-    const room = await prisma.room.findUnique({
-      where: { roomId },
-      select: { createdBy: true },
-    });
-    if (!room) return;
-
-    const isCreator = room.createdBy === data.userId;
-    const member = isCreator
-      ? null
-      : await prisma.roomMember.findUnique({
-          where: {
-            userId_roomId: { userId: data.userId, roomId },
-          },
-        });
-    const hasPending = !isCreator && !member
-      ? listForRoom(roomId).some((r) => r.userId === data.userId)
-      : false;
-
-    if (!isCreator && !member && !hasPending) {
+    const kind = await classifyMembership(data.userId, roomId);
+    if (kind === "none") {
       console.log(
         `[ws] subscribe REJECTED: userId=${data.userId} roomId=${roomId} (not creator, not member, no pending request)`,
       );
@@ -76,39 +132,59 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     }
 
     socket.join(`room:${roomId}`);
+    const isCreator = kind === "owner";
     console.log(
       `[ws] subscribed: userId=${data.userId} roomId=${roomId} isCreator=${isCreator}`,
     );
 
-    // If the subscriber is the room creator, hand them the current
-    // pending requests as the initial state. Non-leaders get nothing
-    // here — they don't need to see requests.
+    // Leader-only initial state: pending join + video-add requests.
     if (isCreator) {
       const requests = listForRoom(roomId);
       socket.emit("room.request.list", { roomId, requests });
-      // Companion: pending video-add requests for the broadcaster panel.
       const addRequests = listAddRequestsForRoom(roomId);
       socket.emit("room.add-request.list", { roomId, requests: addRequests });
     }
 
-    // Playback snapshot via peer poll. Server holds no playback state,
-    // so the only authoritative source for "where is the room right
-    // now" is a live peer's YT iframe. Pick any other socket in the
-    // channel and ask it to report. The peer's response flows through
-    // the `room.playback.report-state` handler below and the resulting
-    // `room.playback.sync` broadcast reaches this just-subscribed
-    // socket as part of the room.
-    try {
-      const peers = await io.in(`room:${roomId}`).fetchSockets();
-      const target = peers.find((s) => s.id !== socket.id);
-      if (target) {
-        target.emit("room.playback.poll-state", { roomId });
-      }
-      // No peers → nothing to sync to. The new joiner cold-starts.
-    } catch (err) {
-      console.error("[ws] playback poll dispatch failed:", err);
+    // Active members (owner + non-banned roster) join the chat channel
+    // and receive the in-memory history. Pending users intentionally
+    // skip — they don't see chat until approved.
+    if (kind === "owner" || kind === "member") {
+      socket.join(`chat:${roomId}`);
+      socket.emit("room.chat.history", {
+        roomId,
+        messages: listMessages(roomId),
+      });
     }
+
+    // Playback snapshot is NO LONGER auto-polled here. The client
+    // emits `room.playback.request-snapshot` once its queue is loaded
+    // and player is ready — eliminates the buffering race the old
+    // auto-poll caused.
   });
+
+  socket.on(
+    "room.playback.request-snapshot",
+    async (payload: PlaybackRequestSnapshotPayload) => {
+      if (typeof payload?.roomId !== "string") return;
+      const { roomId } = payload;
+      // Same membership gate as subscribe. A user not in the room
+      // can't ask for state.
+      if (!(await userMaySubscribe(data.userId, roomId))) return;
+      try {
+        const peers = await io.in(`room:${roomId}`).fetchSockets();
+        const target = peers.find((s) => s.id !== socket.id);
+        if (target) {
+          target.emit("room.playback.poll-state", {
+            roomId,
+            requesterUserId: data.userId,
+          });
+        }
+        // No peer → silently no-op. Requester cold-starts.
+      } catch (err) {
+        console.error("[ws] snapshot request dispatch failed:", err);
+      }
+    },
+  );
 
   socket.on("room.request.approve", async (payload: RequestApprovePayload) => {
     if (typeof payload?.requestId !== "string") return;
@@ -248,6 +324,7 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       if (!member || member.isBanned) return;
     }
 
+    const now = Date.now();
     const sync: PlaybackSyncPayload = {
       roomId: p.roomId,
       videoId: p.videoId,
@@ -255,20 +332,25 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       time: p.time,
       state: p.state,
       updatedBy: data.userId,
-      updatedAt: Date.now(),
+      updatedAt: now,
+      // Control-event path: the client doesn't capture a peer-relative
+      // timestamp for its own emit, so capturedAt collapses to the
+      // server's stamp. Drift is just server→receiver, identical to
+      // the prior single-timestamp behavior.
+      capturedAt: now,
     };
     socket.to(`room:${p.roomId}`).emit("room.playback.sync", sync);
   });
 
-  // Response to a `room.playback.poll-state` we sent on subscribe.
-  // No leader-only check — anyone in the room can be polled because
-  // they all see the same playback state in steady-state sync. The
-  // resulting sync is broadcast to the whole room (including the
-  // reporter); the reporter's lastSyncRef gate makes their own
-  // applySync a no-op.
+  // Response to `room.playback.poll-state` (issued via the new
+  // `room.playback.request-snapshot` flow). Targeted reply to the
+  // requester via their `user:` channel — existing members already
+  // have the state, no point broadcasting.
   socket.on("room.playback.report-state", (p: PlaybackReportPayload) => {
     if (typeof p?.roomId !== "string") return;
     if (typeof p.videoId !== "string") return;
+    if (typeof p.requesterUserId !== "string") return;
+    if (typeof p.capturedAt !== "number") return;
 
     const sync: PlaybackSyncPayload = {
       roomId: p.roomId,
@@ -278,8 +360,10 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       state: p.state,
       updatedBy: data.userId,
       updatedAt: Date.now(),
+      // Peer's capture stamp is what the receiver uses for drift.
+      capturedAt: p.capturedAt,
     };
-    io.to(`room:${p.roomId}`).emit("room.playback.sync", sync);
+    io.to(`user:${p.requesterUserId}`).emit("room.playback.sync", sync);
   });
 
   /* ----------------------------------------------------------------- */
@@ -363,4 +447,117 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       });
     },
   );
+
+  /* ----------------------------------------------------------------- */
+  /* Chat — text messages, typing indicator.                            */
+  /* ----------------------------------------------------------------- */
+
+  socket.on(
+    "room.chat.send",
+    async (
+      p: ChatSendPayload,
+      ack?: (response: ChatSendAck) => void,
+    ) => {
+      // Validate shape. Bail without ack on garbage input.
+      if (
+        typeof p?.roomId !== "string" ||
+        typeof p?.body !== "string" ||
+        typeof p?.clientNonce !== "string"
+      ) {
+        return;
+      }
+      const nonce = p.clientNonce;
+      const fail = (reason: Extract<ChatSendAck, { ok: false }>["reason"]) =>
+        ack?.({ ok: false, reason, clientNonce: nonce });
+
+      const body = p.body.trim();
+      if (body.length === 0) return fail("empty");
+      if (body.length > 2000) return fail("too-long");
+
+      // chatRights gate: LIMITED → owner-only.
+      const room = await prisma.room.findUnique({
+        where: { roomId: p.roomId },
+        include: { settings: true },
+      });
+      if (!room) return fail("forbidden");
+      const isOwner = room.createdBy === data.userId;
+      if (room.settings?.chatRights === "LIMITED" && !isOwner) {
+        return fail("forbidden");
+      }
+
+      // Active-member check (no pending users sending chat).
+      if (!isOwner) {
+        const member = await prisma.roomMember.findUnique({
+          where: {
+            userId_roomId: { userId: data.userId, roomId: p.roomId },
+          },
+        });
+        if (!member || member.isBanned) return fail("membership");
+      }
+
+      if (!consumeChatToken(socket as { data: SocketData })) {
+        return fail("rate-limited");
+      }
+
+      const message = appendMessage({
+        roomId: p.roomId,
+        senderId: data.userId,
+        senderName: data.username,
+        body,
+      });
+
+      // Broadcast to peers ONLY — sender already has the local
+      // optimistic copy; the ack below upgrades it to "delivered".
+      socket.to(`chat:${p.roomId}`).emit("room.chat.message", { message });
+
+      ack?.({
+        ok: true,
+        id: message.id,
+        createdAt: message.createdAt,
+        clientNonce: nonce,
+      });
+    },
+  );
+
+  socket.on("room.chat.typing.start", (p: ChatTypingPayload) => {
+    if (typeof p?.roomId !== "string") return;
+    // Already in the chat: channel = already an active member. The
+    // membership re-check on subscribe gates the join. If a client
+    // emits typing without being in the channel (race or hostile),
+    // peers won't receive it anyway because we route via the same
+    // channel — this guard short-circuits before we even try.
+    if (!socket.rooms.has(`chat:${p.roomId}`)) return;
+    socket.to(`chat:${p.roomId}`).emit("room.chat.typing.start", {
+      roomId: p.roomId,
+      userId: data.userId,
+      userName: data.username,
+    });
+  });
+
+  socket.on("room.chat.typing.stop", (p: ChatTypingPayload) => {
+    if (typeof p?.roomId !== "string") return;
+    if (!socket.rooms.has(`chat:${p.roomId}`)) return;
+    socket.to(`chat:${p.roomId}`).emit("room.chat.typing.stop", {
+      roomId: p.roomId,
+      userId: data.userId,
+      userName: data.username,
+    });
+  });
+
+  // If the user disconnects mid-type, peers should stop showing them
+  // as typing. Send a synthetic stop to every chat channel they were
+  // in. Receivers also have a 5 s TTL safety, so this is belt-and-
+  // suspenders, not load-bearing.
+  socket.on("disconnect", () => {
+    for (const room of socket.rooms) {
+      if (room.startsWith("chat:")) {
+        const roomId = room.slice("chat:".length);
+        socket.to(room).emit("room.chat.typing.stop", {
+          roomId,
+          userId: data.userId,
+          userName: data.username,
+        });
+      }
+    }
+  });
 }

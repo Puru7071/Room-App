@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import type { RoomQueueEntry } from "@/lib/room-types";
-import { ChatView } from "./panels/ChatView";
+import { ChatView, type ChatViewProps } from "./panels/ChatView";
 import { QueueView, type QueueViewProps } from "./panels/QueueView";
 import { RoomParticlesBackground } from "./panels/RoomParticlesBackground";
 import { VideoCallsView } from "./panels/VideoCallsView";
@@ -28,6 +28,16 @@ type QueueProps = Pick<
   "past" | "nowPlaying" | "cues" | "sessionStarted" | "phase" | "onJump"
 >;
 
+type ChatProps = Pick<
+  ChatViewProps,
+  | "messages"
+  | "currentUserId"
+  | "canSend"
+  | "typers"
+  | "onSend"
+  | "onTypingChange"
+>;
+
 type RoomSidePanelProps = QueueProps & {
   /** Current loop state from the server. */
   loop: boolean;
@@ -47,6 +57,19 @@ type RoomSidePanelProps = QueueProps & {
   onLoopToggle?: () => void;
   /** True while the queue is being fetched from the server on page mount. */
   queueLoading?: boolean;
+  /* ---- chat props (forwarded to ChatView) ---- */
+  /** Local chat list with delivery status. */
+  chatMessages: ChatProps["messages"];
+  /** The viewing user's id, for own-vs-other message styling. */
+  currentUserId: ChatProps["currentUserId"];
+  /** Gate for the composer (LIMITED chat → owner-only). */
+  canSendChat: ChatProps["canSend"];
+  /** Map of currently-typing peers, keyed by userId. */
+  typers: ChatProps["typers"];
+  /** Submit a chat message. */
+  onSendChat: ChatProps["onSend"];
+  /** Composer input change → drives typing.start/stop emits. */
+  onTypingChange: ChatProps["onTypingChange"];
   className?: string;
 };
 
@@ -68,6 +91,12 @@ export function RoomSidePanel({
   canControlPlayback,
   onLoopToggle,
   queueLoading = false,
+  chatMessages,
+  currentUserId,
+  canSendChat,
+  typers,
+  onSendChat,
+  onTypingChange,
   className = "",
 }: RoomSidePanelProps) {
   const [tab, setTab] = useState<SidePanelTab>("queue");
@@ -120,7 +149,14 @@ export function RoomSidePanel({
             loading={queueLoading}
           />
         ) : tab === "chat" ? (
-          <ChatView />
+          <ChatView
+            messages={chatMessages}
+            currentUserId={currentUserId}
+            canSend={canSendChat}
+            typers={typers}
+            onSend={onSendChat}
+            onTypingChange={onTypingChange}
+          />
         ) : (
           <VideoCallsView />
         )}
