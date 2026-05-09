@@ -52,6 +52,7 @@ export type MemberJoinedPayload = {
  * to the local reducer". Mirrors the server's `QueueItemWire`.
  */
 export type QueueAddedPayload = {
+  roomId: string;
   item: {
     id: string;
     videoId: string;

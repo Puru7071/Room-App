@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
@@ -23,6 +22,13 @@ import { RoomSidePanel } from "@/components/client/room/RoomSidePanel";
 import { GlobalLoader } from "@/components/layout/GlobalLoader";
 import { RoomWatchLayout } from "@/components/client/room/RoomWatchLayout";
 import {
+  clearRoomStore,
+  getRoomStore,
+  roomCombinedQueue,
+  useRoomStore,
+  type LocalChatMessage,
+} from "@/components/client/room/store/roomStore";
+import {
   RoomYouTubePlayer,
   type RoomYouTubePlayerHandle,
 } from "@/components/client/room/RoomYouTubePlayer";
@@ -37,92 +43,13 @@ import {
   type RoomSettingsDetail,
 } from "@/lib/api";
 import type {
-  ChatMessageWire,
   ChatSendAck,
-  JoinRequestWire,
   PlaybackSyncPayload,
-  VideoAddRequestWire,
 } from "@/lib/ws-events";
 import { getSocket } from "@/lib/ws-client";
 import { DEFAULT_ROOM_YOUTUBE_VIDEO_ID } from "@/lib/app-constants";
-import type { RoomQueueEntry } from "@/lib/room-types";
 import { extractYouTubeVideoId } from "@/lib/youtube";
 import type { YouTubeSearchResult } from "@/lib/youtube-api";
-
-type RoomState = {
-  sessionStarted: boolean;
-  past: RoomQueueEntry[];
-  nowPlaying: RoomQueueEntry | null;
-  cues: RoomQueueEntry[];
-  videoUrl: string;
-};
-
-const initialState: RoomState = {
-  sessionStarted: false,
-  past: [],
-  nowPlaying: null,
-  cues: [],
-  videoUrl: "",
-};
-
-type RoomAction =
-  | { type: "SET_VIDEO_URL"; value: string }
-  | { type: "ADD_VIDEO"; entry: RoomQueueEntry }
-  | { type: "ADVANCE_TO"; absoluteIndex: number; loop?: boolean };
-
-function combinedQueue(state: RoomState): RoomQueueEntry[] {
-  return [
-    ...state.past,
-    ...(state.nowPlaying ? [state.nowPlaying] : []),
-    ...state.cues,
-  ];
-}
-
-function roomReducer(state: RoomState, action: RoomAction): RoomState {
-  switch (action.type) {
-    case "SET_VIDEO_URL":
-      return { ...state, videoUrl: action.value };
-    case "ADD_VIDEO": {
-      const { entry } = action;
-      if (!state.sessionStarted) {
-        return {
-          ...state,
-          sessionStarted: true,
-          nowPlaying: entry,
-          videoUrl: "",
-        };
-      }
-      if (state.nowPlaying) {
-        return { ...state, cues: [...state.cues, entry], videoUrl: "" };
-      }
-      return { ...state, nowPlaying: entry, videoUrl: "" };
-    }
-    case "ADVANCE_TO": {
-      const combined = combinedQueue(state);
-      const idx = action.absoluteIndex;
-      if (idx < 0) return state;
-      if (idx >= combined.length) {
-        // Loop wrap: when the queue ends and the room's loop flag is on,
-        // restart from the first item instead of clearing the queue.
-        if (action.loop && combined.length > 0) {
-          return {
-            ...state,
-            past: [],
-            nowPlaying: combined[0],
-            cues: combined.slice(1),
-          };
-        }
-        return { ...state, past: combined, nowPlaying: null, cues: [] };
-      }
-      return {
-        ...state,
-        past: combined.slice(0, idx),
-        nowPlaying: combined[idx],
-        cues: combined.slice(idx + 1),
-      };
-    }
-  }
-}
 
 /**
  * Local membership status, derived from the `POST /rooms/:id/join` call:
@@ -145,28 +72,11 @@ export default function RoomPage() {
   const [settings, setSettings] = useState<RoomSettingsDetail | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [joinStatus, setJoinStatus] = useState<JoinStatus>("joining");
-  /** Pending join requests visible to the leader. Populated by WS events. */
-  const [requests, setRequests] = useState<JoinRequestWire[]>([]);
-  /** Pending video-add requests (leader-only). Populated by WS events. */
-  const [addRequests, setAddRequests] = useState<VideoAddRequestWire[]>([]);
-  /**
-   * Local chat list. Wraps `ChatMessageWire` with delivery state so
-   * the UI can render single-tick (pending) vs double-tick
-   * (delivered) for the sender's own messages. The page uses
-   * optimistic insert: send → unshift with status="pending" + a
-   * client-generated `clientNonce` → server's emit-with-ack callback
-   * upgrades to status="delivered" with the canonical server `id`.
-   */
-  type LocalChatMessage = ChatMessageWire & {
-    status: "pending" | "delivered";
-    clientNonce?: string;
-  };
-  const [chatMessages, setChatMessages] = useState<LocalChatMessage[]>([]);
-  /**
-   * Map of currently-typing peers. Receiver tracks via TTL safety
-   * (5 s) — if a peer's `typing.stop` is lost, we still drop them.
-   */
-  const [typers, setTypers] = useState<Record<string, { name: string }>>({});
+  const videoUrl = useRoomStore(roomId, (s) => s.videoUrl);
+  const past = useRoomStore(roomId, (s) => s.past);
+  const nowPlaying = useRoomStore(roomId, (s) => s.nowPlaying);
+  const cues = useRoomStore(roomId, (s) => s.cues);
+  const sessionStarted = useRoomStore(roomId, (s) => s.sessionStarted);
   const typerTimeoutsRef = useRef<Record<string, number>>({});
   /**
    * `true` while the persisted queue is being fetched from the server
@@ -180,6 +90,12 @@ export default function RoomPage() {
    * a fresh session re-arms the request.
    */
   const [playerReady, setPlayerReady] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      clearRoomStore(roomId);
+    };
+  }, [roomId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +129,18 @@ export default function RoomPage() {
     };
   }, [roomId]);
 
+  // Re-emit `room.subscribe` once the user is confirmed as a member.
+  // The first subscribe (fired by `useRoomSocket` on mount) races the
+  // HTTP join: for new joiners the server's membership check sees
+  // "none" and rejects, so the socket never enters the `room:` /
+  // `chat:` channels. Re-subscribing after `joined` lands the socket
+  // in the right channels — server-side `socket.join` is idempotent,
+  // so this is safe for the leader/already-members too.
+  useEffect(() => {
+    if (joinStatus !== "joined") return;
+    getSocket().emit("room.subscribe", { roomId });
+  }, [joinStatus, roomId]);
+
   // Queue load. Lives in its own effect keyed on `joinStatus` so that
   // pending-then-approved users (private rooms) actually load the queue
   // when their status flips to "joined" via WS — the previous one-shot
@@ -225,14 +153,19 @@ export default function RoomPage() {
       const queueResult = await getRoomQueue(roomId);
       if (cancelled) return;
       if (queueResult.ok) {
+        // Per-item adds — same flow the original reducer used. Each
+        // call routes through `addQueueItem`'s sessionStarted branch,
+        // so the first item lands as `nowPlaying` (flipping phase to
+        // "playing") and subsequent items land in `cues`. Matches the
+        // pre-Zustand dispatch sequence one-for-one so downstream
+        // playback logic (session snapshot capture, deferred playlist
+        // update, auto-advance) sees identical timing.
+        const store = getRoomStore(roomId).getState();
         for (const item of queueResult.items) {
-          dispatch({
-            type: "ADD_VIDEO",
-            entry: {
-              clipId: item.id,
-              videoId: item.videoId,
-              addedByName: item.addedByName,
-            },
+          store.addQueueItem({
+            clipId: item.id,
+            videoId: item.videoId,
+            addedByName: item.addedByName,
           });
         }
       } else {
@@ -270,8 +203,32 @@ export default function RoomPage() {
     state: "playing" | "paused";
     time: number;
   } | null>(null);
+  /**
+   * Ordering watermark for inbound sync acceptance.
+   *
+   * We primarily order by `capturedAt` (when the source actually sampled
+   * the player's state) and tie-break by `updatedAt` (server receive stamp).
+   * This avoids first-session rewinds where an older snapshot (captured on
+   * video 1) arrives after a newer jump sync (video 2) but still has a newer
+   * `updatedAt` because it reached the server later.
+   */
+  const lastAppliedSyncStampRef = useRef<{ capturedAt: number; updatedAt: number }>({
+    capturedAt: 0,
+    updatedAt: 0,
+  });
   /** Sync that arrived before player or queue were ready — apply later. */
   const pendingSyncRef = useRef<PlaybackSyncPayload | null>(null);
+  /**
+   * True for ~1 s while applySync is propagating an incoming snapshot.
+   * Suppresses emitPlayback so the YT events triggered by our own
+   * imperative pause/play/seek/loadAndSeek don't bounce back to the
+   * room as bogus "paused at 0s" / "playing at X" updates. The
+   * lastSyncRef gate alone wasn't enough — pause-then-seek produces
+   * a PAUSED event with a transient time that doesn't match the
+   * target time.
+   */
+  const applyingRemoteSyncRef = useRef(false);
+  const applyingTimerRef = useRef<number | null>(null);
   /** Set on `offline` event; consumed on the next `online` to trigger resync. */
   const wasOfflineRef = useRef<boolean>(false);
   /** Debounce stamp so multiple resync triggers within 1s collapse to one. */
@@ -292,16 +249,21 @@ export default function RoomPage() {
     getSocket().emit("room.playback.request-snapshot", { roomId });
   }, [roomId]);
 
+  const isOlderSyncThanApplied = useCallback((p: PlaybackSyncPayload) => {
+    const last = lastAppliedSyncStampRef.current;
+    if (p.capturedAt < last.capturedAt) return true;
+    if (p.capturedAt > last.capturedAt) return false;
+    return p.updatedAt < last.updatedAt;
+  }, []);
+
   // WebSocket subscription. Mounted as soon as we have a roomId so the
   // leader's panel reflects requests created via REST (the same socket
   // singleton is used for read+write). For requesters waiting on
   // approval, the same hook delivers `room.request.approved/rejected`.
   useRoomSocket(roomId, {
-    onRequestList: (rs) => setRequests(rs),
-    onRequestCreated: (r) =>
-      setRequests((prev) => (prev.some((p) => p.id === r.id) ? prev : [...prev, r])),
-    onRequestExpired: (id) =>
-      setRequests((prev) => prev.filter((r) => r.id !== id)),
+    onRequestList: (rs) => getRoomStore(roomId).getState().setJoinRequests(rs),
+    onRequestCreated: (r) => getRoomStore(roomId).getState().upsertJoinRequest(r),
+    onRequestExpired: (id) => getRoomStore(roomId).getState().removeJoinRequest(id),
     onRequestRemoved: (id) => {
       // Single source of truth for "this request is gone" — fired on
       // the room channel for both approve and reject. Filters the
@@ -309,7 +271,7 @@ export default function RoomPage() {
       // event too (they're in the room channel because of their own
       // pending request) but it's harmless: their request id is
       // already not in `requests` for them.
-      setRequests((prev) => prev.filter((r) => r.id !== id));
+      getRoomStore(roomId).getState().removeJoinRequest(id);
     },
     onRequestApproved: (payload) => {
       // I'm the requester: my request was approved. Slide into the
@@ -337,20 +299,25 @@ export default function RoomPage() {
       // for our own adds (we POSTed; we don't dispatch locally) and
       // for other members' adds. Dispatching `ADD_VIDEO` here is the
       // single source of truth for keeping our reducer in sync.
-      dispatch({
-        type: "ADD_VIDEO",
-        entry: {
-          clipId: item.id,
-          videoId: item.videoId,
-          addedByName: item.addedByName,
-        },
+      getRoomStore(roomId).getState().addQueueItem({
+        clipId: item.id,
+        videoId: item.videoId,
+        addedByName: item.addedByName,
       });
     },
     onPlaybackSync: (payload) => {
-      // Buffer if we can't apply yet — applied on player ready / queue
-      // load via the deferred-apply effect below.
+      if (isOlderSyncThanApplied(payload)) {
+        return;
+      }
       if (queueLoading || !playerHandleRef.current?.isReady()) {
-        pendingSyncRef.current = payload;
+        if (
+          !pendingSyncRef.current ||
+          payload.capturedAt > pendingSyncRef.current.capturedAt ||
+          (payload.capturedAt === pendingSyncRef.current.capturedAt &&
+            payload.updatedAt >= pendingSyncRef.current.updatedAt)
+        ) {
+          pendingSyncRef.current = payload;
+        }
         return;
       }
       applySync(payload);
@@ -363,15 +330,17 @@ export default function RoomPage() {
       // compensation can include the peer→server hop. Echo
       // `requesterUserId` so the server can route the targeted reply.
       const handle = playerHandleRef.current;
-      if (!handle?.isReady() || !state.nowPlaying) return;
+      const queueState = getRoomStore(roomId).getState();
+      if (!handle?.isReady() || !queueState.nowPlaying) return;
       const ytState = handle.getYTState();
       const playState: "playing" | "paused" =
         ytState === 1 || ytState === 3 ? "playing" : "paused";
       const time = handle.getCurrentTime();
+      // eslint-disable-next-line react-hooks/purity
       const capturedAt = Date.now();
       getSocket().emit("room.playback.report-state", {
         roomId,
-        videoId: state.nowPlaying.videoId,
+        videoId: queueState.nowPlaying.videoId,
         position: currentIndex,
         time,
         state: playState,
@@ -380,11 +349,9 @@ export default function RoomPage() {
       });
     },
     /* ---- video-add requests (broadcaster panel) ---- */
-    onAddRequestList: (rs) => setAddRequests(rs),
-    onAddRequestCreated: (r) =>
-      setAddRequests((prev) => (prev.some((p) => p.id === r.id) ? prev : [...prev, r])),
-    onAddRequestExpired: (id) =>
-      setAddRequests((prev) => prev.filter((r) => r.id !== id)),
+    onAddRequestList: (rs) => getRoomStore(roomId).getState().setAddRequests(rs),
+    onAddRequestCreated: (r) => getRoomStore(roomId).getState().upsertAddRequest(r),
+    onAddRequestExpired: (id) => getRoomStore(roomId).getState().removeAddRequest(id),
     onAddRequestRemoved: (id) => {
       // Single source of truth for "this video-add request is gone" —
       // fired on the room channel for both approve and reject. Filters
@@ -392,7 +359,7 @@ export default function RoomPage() {
       // receives this broadcast (they're in the room channel) but
       // there's no listener wiring it to UI on their side — toasts
       // come via the user-targeted approved/rejected events below.
-      setAddRequests((prev) => prev.filter((r) => r.id !== id));
+      getRoomStore(roomId).getState().removeAddRequest(id);
     },
     onAddRequestApproved: () => {
       // I'm the requester: my add was approved. Server already
@@ -405,39 +372,26 @@ export default function RoomPage() {
       toast.error("Host declined your video.");
     },
     /* ---- chat ---- */
-    onChatHistory: (msgs) =>
-      setChatMessages(msgs.map((m) => ({ ...m, status: "delivered" }))),
+    onChatHistory: (msgs) => getRoomStore(roomId).getState().setChatHistory(msgs),
     onChatMessage: (m) =>
       // Dedupe by id — guards against the rare case the same broadcast
       // arrives twice (reconnect replay, etc.).
-      setChatMessages((prev) =>
-        prev.some((x) => x.id === m.id)
-          ? prev
-          : [...prev, { ...m, status: "delivered" }],
-      ),
+      getRoomStore(roomId).getState().appendChatMessage(m),
     onChatTypingStart: ({ userId, userName }) => {
-      setTypers((prev) => ({ ...prev, [userId]: { name: userName } }));
+      getRoomStore(roomId).getState().setTyper(userId, userName);
       // 5 s safety TTL — peer's `typing.stop` may be lost on
       // reconnect, server's disconnect synth-stop covers most cases
       // but this is the final belt-and-suspenders.
       window.clearTimeout(typerTimeoutsRef.current[userId]);
       typerTimeoutsRef.current[userId] = window.setTimeout(() => {
-        setTypers((prev) => {
-          const next = { ...prev };
-          delete next[userId];
-          return next;
-        });
+        getRoomStore(roomId).getState().clearTyper(userId);
         delete typerTimeoutsRef.current[userId];
       }, 5000);
     },
     onChatTypingStop: ({ userId }) => {
       window.clearTimeout(typerTimeoutsRef.current[userId]);
       delete typerTimeoutsRef.current[userId];
-      setTypers((prev) => {
-        const next = { ...prev };
-        delete next[userId];
-        return next;
-      });
+      getRoomStore(roomId).getState().clearTyper(userId);
     },
   });
 
@@ -470,30 +424,18 @@ export default function RoomPage() {
         status: "pending",
         clientNonce,
       };
-      setChatMessages((prev) => [...prev, optimistic]);
+      getRoomStore(roomId).getState().addOptimisticChatMessage(optimistic);
       getSocket().emit(
         "room.chat.send",
         { roomId, body: trimmed, clientNonce },
         (ack: ChatSendAck) => {
           if (ack.ok) {
-            setChatMessages((prev) =>
-              prev.map((m) =>
-                m.clientNonce === clientNonce
-                  ? {
-                      ...m,
-                      id: ack.id,
-                      createdAt: ack.createdAt,
-                      status: "delivered",
-                      clientNonce: undefined,
-                    }
-                  : m,
-              ),
-            );
+            getRoomStore(roomId)
+              .getState()
+              .markChatDelivered(clientNonce, ack.id, ack.createdAt);
           } else {
             toast.error(`Couldn't send: ${ack.reason}`);
-            setChatMessages((prev) =>
-              prev.filter((m) => m.clientNonce !== clientNonce),
-            );
+            getRoomStore(roomId).getState().removeOptimisticChatMessage(clientNonce);
           }
         },
       );
@@ -570,14 +512,15 @@ export default function RoomPage() {
     setSettings(result.settings);
   }, [isOwner, settings, roomId]);
 
-  const [state, dispatch] = useReducer(roomReducer, initialState);
+  const playlist = useMemo(
+    () => roomCombinedQueue({ past, nowPlaying, cues }),
+    [past, nowPlaying, cues],
+  );
+  const currentIndex = nowPlaying ? past.length : -1;
 
-  const playlist = useMemo(() => combinedQueue(state), [state]);
-  const currentIndex = state.nowPlaying ? state.past.length : -1;
-
-  const phase: "default" | "playing" | "stopped" = !state.sessionStarted
+  const phase: "default" | "playing" | "stopped" = !sessionStarted
     ? "default"
-    : state.nowPlaying
+    : nowPlaying
       ? "playing"
       : "stopped";
 
@@ -593,10 +536,13 @@ export default function RoomPage() {
   const emitPlayback = useCallback(
     (opts: { state: "playing" | "paused"; time: number }) => {
       if (!canControlPlayback) return;
-      if (!state.nowPlaying) return;
+      const queueState = getRoomStore(roomId).getState();
+      if (!queueState.nowPlaying) return;
+      if (applyingRemoteSyncRef.current) return;
+      const queueIndex = queueState.nowPlaying ? queueState.past.length : -1;
       const next = {
-        videoId: state.nowPlaying.videoId,
-        position: currentIndex,
+        videoId: queueState.nowPlaying.videoId,
+        position: queueIndex,
         state: opts.state,
         time: opts.time,
       };
@@ -613,7 +559,7 @@ export default function RoomPage() {
       lastSyncRef.current = next;
       getSocket().emit("room.playback.update", { roomId, ...next });
     },
-    [canControlPlayback, roomId, state.nowPlaying, currentIndex],
+    [canControlPlayback, roomId],
   );
 
   /**
@@ -647,12 +593,19 @@ export default function RoomPage() {
     (p: PlaybackSyncPayload) => {
       const handle = playerHandleRef.current;
       if (!handle) return;
-      const combined = combinedQueue(state);
+      if (isOlderSyncThanApplied(p)) return;
+      const queueState = getRoomStore(roomId).getState();
+      const combined = roomCombinedQueue(queueState);
+      const queueIndex = queueState.nowPlaying ? queueState.past.length : -1;
       // Position out of range — drop. The leader's next sync will
       // re-correct (or our queue will catch up via room.queue.added).
       if (p.position >= combined.length) return;
       // Queue-mismatch safety: videoId at that position must agree.
       if (combined[p.position]?.videoId !== p.videoId) return;
+      lastAppliedSyncStampRef.current = {
+        capturedAt: p.capturedAt,
+        updatedAt: p.updatedAt,
+      };
 
       lastSyncRef.current = {
         videoId: p.videoId,
@@ -660,6 +613,20 @@ export default function RoomPage() {
         state: p.state,
         time: p.time,
       };
+
+      // Open the suppression window. ~1 s covers the YT events
+      // triggered by the imperative calls below (PAUSED, BUFFERING,
+      // post-seek PLAYING, polling-detector onSeek). emitPlayback
+      // bails while this is true so we don't echo bogus state to the
+      // room.
+      applyingRemoteSyncRef.current = true;
+      if (applyingTimerRef.current !== null) {
+        window.clearTimeout(applyingTimerRef.current);
+      }
+      applyingTimerRef.current = window.setTimeout(() => {
+        applyingRemoteSyncRef.current = false;
+        applyingTimerRef.current = null;
+      }, 1000);
 
       // Drift compensation: what the source clocked at `time` at
       // `capturedAt` is now at `time + driftMs/1000`. We use
@@ -675,38 +642,52 @@ export default function RoomPage() {
           ? p.time + driftMs / 1000
           : p.time;
 
-      if (p.position !== currentIndex) {
+      if (p.position !== queueIndex) {
         // Jump-and-seek atomically. If we did `dispatch + seekTo`, the
         // prop-driven `loadPlaylist(..., 0)` effect would fire on the
         // next render and clobber our seek — that was the new-joiner
         // "lands at 0:00 instead of host's time" bug. `loadAndSeek`
         // bumps the player's internal index ref so the same effect
         // sees `indexMatch=true` and no-ops. Then dispatch updates the
-        // queue panel.
+        // queue panel. For paused state, loadAndSeek uses cuePlaylist
+        // (no autoplay) so the player stays cued at the right time
+        // without racing YT's autoplay-induced PLAYING.
         handle.loadAndSeek(p.position, targetTime, p.state === "playing");
-        dispatch({ type: "ADVANCE_TO", absoluteIndex: p.position });
+        getRoomStore(roomId).getState().advanceTo(p.position);
         return;
       }
 
-      handle.seekTo(targetTime);
-      if (p.state === "playing") handle.play();
-      else handle.pause();
+      // Same-position case. Order matters: per the YT IFrame docs,
+      // a paused player REMAINS paused after seekTo — so for the
+      // paused branch we pause FIRST, then seek. Doing it the other
+      // way (seek-then-pause) raced YT's post-seek PLAYING state
+      // (especially on a fresh autoplay-started joiner) and the
+      // pause was effectively ignored.
+      if (p.state === "playing") {
+        handle.seekTo(targetTime);
+        handle.play();
+      } else {
+        handle.pause();
+        handle.seekTo(targetTime);
+      }
     },
-    [state, currentIndex],
+    [roomId, isOlderSyncThanApplied],
   );
 
   // Deferred-apply: a sync may have arrived before the queue finished
-  // loading or the player became ready. This effect fires whenever
-  // either changes; if a pending sync is waiting and both prerequisites
-  // are met, we apply it now.
+  // loading or the player became ready. This effect fires whenever any
+  // of the prerequisites change (queueLoading flips, applySync identity
+  // refreshes, or `playerReady` transitions to true) — if a pending
+  // sync is waiting and both prerequisites are met, we apply it now.
   useEffect(() => {
     if (queueLoading) return;
+    if (!playerReady) return;
     const pending = pendingSyncRef.current;
     if (!pending) return;
     if (!playerHandleRef.current?.isReady()) return;
     applySync(pending);
     pendingSyncRef.current = null;
-  }, [queueLoading, applySync]);
+  }, [queueLoading, playerReady, applySync]);
 
   // Offline → online recovery. Only fires `requestFreshSnapshot` on a
   // real offline-to-online transition (the wasOfflineRef guard prevents
@@ -740,7 +721,7 @@ export default function RoomPage() {
     if (joinStatus !== "joined") return;
     if (queueLoading) return;
     if (!playerReady) return;
-    if (!state.sessionStarted) return;
+    if (!sessionStarted) return;
     if (initialSnapshotRequestedRef.current) return;
     initialSnapshotRequestedRef.current = true;
     requestFreshSnapshot();
@@ -748,7 +729,7 @@ export default function RoomPage() {
     joinStatus,
     queueLoading,
     playerReady,
-    state.sessionStarted,
+    sessionStarted,
     requestFreshSnapshot,
   ]);
 
@@ -803,16 +784,16 @@ export default function RoomPage() {
       if (result.status === "request-pending") {
         toast.success("Sent to the host for approval.");
       }
-      dispatch({ type: "SET_VIDEO_URL", value: "" });
+      getRoomStore(roomId).getState().setVideoUrl("");
     },
     [roomId],
   );
 
   const handleAddVideo = useCallback(() => {
-    const videoId = extractYouTubeVideoId(state.videoUrl);
+    const videoId = extractYouTubeVideoId(videoUrl);
     if (!videoId) return;
     void postAddVideo(videoId);
-  }, [state.videoUrl, postAddVideo]);
+  }, [videoUrl, postAddVideo]);
 
   const handleSearchPick = useCallback(
     (result: YouTubeSearchResult) => {
@@ -821,28 +802,18 @@ export default function RoomPage() {
     [postAddVideo],
   );
 
-  // Loop is read inside the dispatch (not at callback creation) so the
-  // newest setting is honoured when a video naturally ends — no
-  // re-creation of the callback when `loop` changes.
-  const loopRef = useRef<boolean>(false);
-  loopRef.current = settings?.loop ?? false;
-
   const handleAdvance = useCallback(
     (absoluteIndex: number) => {
-      dispatch({
-        type: "ADVANCE_TO",
-        absoluteIndex,
-        loop: loopRef.current,
-      });
+      getRoomStore(roomId).getState().advanceTo(absoluteIndex, settings?.loop ?? false);
       // Emit the advance so other room members follow. Auto-advance
       // (state=0 ENDED → next index) is a "playing at t=0" emit. If
       // the index landed past the end (queue exhausted, no loop), the
       // combined lookup will be undefined and we skip.
-      const combined = combinedQueue(state);
+      const combined = roomCombinedQueue(getRoomStore(roomId).getState());
       const target = combined[absoluteIndex];
       if (target) emitForJump(absoluteIndex, target.videoId);
     },
-    [state, emitForJump],
+    [emitForJump, roomId, settings?.loop],
   );
 
   const handleQueueJump = useCallback(
@@ -851,22 +822,23 @@ export default function RoomPage() {
         | { zone: "past"; index: number }
         | { zone: "next"; index: number },
     ) => {
-      const combined = combinedQueue(state);
+      const queueState = getRoomStore(roomId).getState();
+      const combined = roomCombinedQueue(queueState);
       const absIndex =
         payload.zone === "past"
           ? payload.index
-          : state.past.length + (state.nowPlaying ? 1 : 0) + payload.index;
+          : queueState.past.length + (queueState.nowPlaying ? 1 : 0) + payload.index;
       const target = combined[absIndex];
       if (!target) return;
-      dispatch({ type: "ADVANCE_TO", absoluteIndex: absIndex });
+      queueState.advanceTo(absIndex);
       emitForJump(absIndex, target.videoId);
     },
-    [state, emitForJump],
+    [emitForJump, roomId],
   );
 
   const ambientVideoId =
-    state.nowPlaying?.videoId ??
-    state.past[state.past.length - 1]?.videoId ??
+    nowPlaying?.videoId ??
+    past[past.length - 1]?.videoId ??
     DEFAULT_ROOM_YOUTUBE_VIDEO_ID;
 
   if (notFound) {
@@ -910,9 +882,9 @@ export default function RoomPage() {
 
         <RoomPageHeader
           roomId={roomId}
-          videoUrl={state.videoUrl}
+          videoUrl={videoUrl}
           onVideoUrlChange={(value) =>
-            dispatch({ type: "SET_VIDEO_URL", value })
+            getRoomStore(roomId).getState().setVideoUrl(value)
           }
           onAddVideo={handleAddVideo}
           onSearchPick={handleSearchPick}
@@ -970,16 +942,17 @@ export default function RoomPage() {
             }
             nowPlaying={
               <RoomNowPlayingCard
-                videoId={state.nowPlaying?.videoId ?? null}
-                addedByName={state.nowPlaying?.addedByName ?? null}
+                videoId={nowPlaying?.videoId ?? null}
+                addedByName={nowPlaying?.addedByName ?? null}
               />
             }
             queue={
               <RoomSidePanel
-                past={state.past}
-                nowPlaying={state.nowPlaying}
-                cues={state.cues}
-                sessionStarted={state.sessionStarted}
+                roomId={roomId}
+                past={past}
+                nowPlaying={nowPlaying}
+                cues={cues}
+                sessionStarted={sessionStarted}
                 phase={phase}
                 onJump={handleQueueJump}
                 loop={settings?.loop ?? false}
@@ -987,10 +960,8 @@ export default function RoomPage() {
                 canControlPlayback={canControlPlayback}
                 onLoopToggle={handleLoopToggle}
                 queueLoading={queueLoading}
-                chatMessages={chatMessages}
                 currentUserId={user?.userId ?? null}
                 canSendChat={canSendChat}
-                typers={typers}
                 onSendChat={handleSendChat}
                 onTypingChange={handleTypingChange}
                 className="min-h-0"
@@ -998,9 +969,8 @@ export default function RoomPage() {
             }
             bottomPanel={
               <RoomBroadcasterPanel
+                roomId={roomId}
                 isOwner={isOwner}
-                joinRequests={requests}
-                addRequests={addRequests}
                 onApproveJoin={handleApproveJoin}
                 onRejectJoin={handleRejectJoin}
                 onApproveAdd={handleApproveAdd}

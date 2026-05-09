@@ -88,6 +88,14 @@ type YTPlayer = {
     startSeconds?: number,
     suggestedQuality?: string,
   ) => void;
+  /** Like loadPlaylist but does NOT autoplay — leaves the player in
+   *  CUED (5) state. Used by `loadAndSeek` when the room is paused. */
+  cuePlaylist: (
+    playlist: string[] | string,
+    index?: number,
+    startSeconds?: number,
+    suggestedQuality?: string,
+  ) => void;
   playVideoAt: (index: number) => void;
   playVideo: () => void;
   pauseVideo: () => void;
@@ -258,7 +266,6 @@ export const RoomYouTubePlayer = forwardRef<
   }
 
   const sessionFirstVideoId = sessionSnapshotRef.current?.firstVideoId ?? "";
-  const sessionPlaylistParam = sessionSnapshotRef.current?.playlistParam ?? "";
 
   const playerOpts = useMemo(
     () => ({
@@ -275,10 +282,9 @@ export const RoomYouTubePlayer = forwardRef<
         // doesn't have control authority. The click-blocker overlay
         // below catches any clicks that would have reached the iframe.
         ...(interactive ? {} : { controls: 0, disablekb: 1 }),
-        ...(sessionPlaylistParam ? { playlist: sessionPlaylistParam } : {}),
       },
     }),
-    [sessionPlaylistParam, interactive],
+    [interactive],
   );
 
   /** Reconcile React's desired playlist/index into the live player. */
@@ -371,27 +377,23 @@ export const RoomYouTubePlayer = forwardRef<
       const ids = ytIdsRef.current;
       if (index < 0 || index >= ids.length) return;
       try {
-        // `loadPlaylist(ids, index, startSeconds)` reloads the iframe's
-        // playlist and starts the requested video at the requested
-        // time in one call — no separate seekTo needed and no
-        // playhead-reset race.
-        player.loadPlaylist(ids, index, time);
-        ytCurrentIndexRef.current = index;
-        // Suppress the autoplay-induced PLAYING that loadPlaylist
-        // triggers — same pattern the prop-driven effect uses.
-        suppressNextPlayEventRef.current = true;
-        if (!play) {
-          // loadPlaylist auto-plays. Defer the pause until YT has
-          // applied the load — calling pauseVideo synchronously gets
-          // ignored because the player isn't yet in a playing state.
-          window.setTimeout(() => {
-            try {
-              playerRef.current?.pauseVideo();
-            } catch {
-              /* noop */
-            }
-          }, 100);
+        if (play) {
+          // Loads playlist + starts the requested video at the
+          // requested time in one call — no separate seekTo needed
+          // and no playhead-reset race.
+          player.loadPlaylist(ids, index, time);
+          // Suppress the autoplay-induced PLAYING that loadPlaylist
+          // triggers — same pattern the prop-driven effect uses.
+          suppressNextPlayEventRef.current = true;
+        } else {
+          // Room is paused at this position. cuePlaylist queues the
+          // video at the right index/time WITHOUT autoplaying — the
+          // player ends up in CUED (5) state, visually equivalent to
+          // a paused-at-time-T view. Avoids the previous setTimeout-
+          // based pause hack which raced YT's autoplay startup.
+          player.cuePlaylist(ids, index, time);
         }
+        ytCurrentIndexRef.current = index;
       } catch {
         /* iframe may be detaching */
       }
@@ -446,19 +448,19 @@ export const RoomYouTubePlayer = forwardRef<
           isReadyRef.current = true;
           const snapshot = sessionSnapshotRef.current;
           ytIdsRef.current = snapshot ? [...snapshot.ids] : [];
-          ytCurrentIndexRef.current = 0;
-          // The autoplay-triggered first PLAYING event is *our* doing; the
-          // refs above are already authoritative. Suppress unconditionally
-          // so onStateChange's getPlaylistIndex() sync path can't fire a
-          // false advance — when the iframe is created with videoId + a
-          // multi-item playerVars.playlist, getPlaylistIndex() can report
-          // an index that disagrees with our model and ADVANCE_TO past v1.
-          suppressNextPlayEventRef.current = true;
           const desiredIdx = currentIndexRef.current;
-          if (desiredIdx > 0 && desiredIdx < ytIdsRef.current.length) {
+          const bootstrapIdx =
+            desiredIdx >= 0 && desiredIdx < ytIdsRef.current.length ? desiredIdx : 0;
+          ytCurrentIndexRef.current = bootstrapIdx;
+          // Deterministic bootstrap: always load the session playlist through
+          // the JS API, rather than relying on iframe `playerVars.playlist`.
+          // This prevents first-session index drift where YT's internal
+          // playlist mapping can treat the initial `videoId` separately and
+          // snap back to entry 0 on the first jump.
+          suppressNextPlayEventRef.current = true;
+          if (ytIdsRef.current.length > 0) {
             try {
-              event.target.playVideoAt(desiredIdx);
-              ytCurrentIndexRef.current = desiredIdx;
+              event.target.loadPlaylist(ytIdsRef.current, bootstrapIdx, 0);
             } catch {
               /* noop */
             }

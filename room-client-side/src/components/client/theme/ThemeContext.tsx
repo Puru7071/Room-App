@@ -19,6 +19,7 @@ import {
   writeStoredTheme,
   type ThemePreference,
 } from "@/lib/theme-preference";
+import { useRoomUiPrefsStore } from "@/components/client/room/store/roomStore";
 
 export type ThemeContextValue = {
   theme: ThemePreference;
@@ -48,6 +49,7 @@ type OverlayState = {
 };
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const setAppTheme = useRoomUiPrefsStore((s) => s.setAppTheme);
   const theme = useSyncExternalStore(
     subscribeThemeChange,
     getSnapshot,
@@ -61,8 +63,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const commit = useCallback((next: ThemePreference) => {
     applyHtmlClass(next);
     writeStoredTheme(next);
+    setAppTheme(next);
     emitThemeChange();
-  }, []);
+  }, [setAppTheme]);
 
   const setTheme = useCallback(
     (next: ThemePreference) => {

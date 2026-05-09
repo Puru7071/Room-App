@@ -94,7 +94,7 @@ export type QueueItemWire = {
  * connected member's reducer can append the item. Sender included —
  * single source of truth, no client-side optimism.
  */
-export type QueueAddedPayload = { item: QueueItemWire };
+export type QueueAddedPayload = { roomId: string; item: QueueItemWire };
 
 /* ------------------------------------------------------------------ */
 /* Video-add requests (broadcast carousel — companion to JoinRequest)  */

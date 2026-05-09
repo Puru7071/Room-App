@@ -68,7 +68,10 @@ export async function appendQueueItem(
     position: item.position,
   };
 
-  getIo()?.to(`room:${roomId}`).emit("room.queue.added", { item: wireItem });
+  getIo()?.to(`room:${roomId}`).emit("room.queue.added", {
+    roomId,
+    item: wireItem,
+  });
 
   return wireItem;
 }

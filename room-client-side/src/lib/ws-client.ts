@@ -21,16 +21,30 @@ const WS_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:9900";
 
 let socket: Socket | null = null;
+let socketAuthToken = "";
 
 export function getSocket(): Socket {
-  if (socket && socket.connected) return socket;
-  if (socket) return socket; // connecting/reconnecting; let it run
   const token = getAuthToken();
+  const nextAuthToken = token ?? "";
+  if (socket) {
+    // If auth identity changed (new login/user in same tab), keep the
+    // same Socket instance (so existing listeners stay wired) but rotate
+    // handshake auth and force a reconnect under the new token.
+    if (socketAuthToken !== nextAuthToken) {
+      socketAuthToken = nextAuthToken;
+      socket.auth = { ...(socket.auth ?? {}), token: nextAuthToken };
+      if (socket.connected) {
+        socket.disconnect().connect();
+      }
+    }
+    return socket; // connected or still connecting/reconnecting
+  }
   if (!token) {
     console.warn("[ws] no auth token — socket will likely fail handshake");
   }
+  socketAuthToken = nextAuthToken;
   socket = io(WS_URL, {
-    auth: { token: token ?? "" },
+    auth: { token: nextAuthToken },
     autoConnect: true,
     // Allow Socket.IO's default transport upgrade path (long-poll → ws).
     // Forcing websocket-only here would break against proxies that don't
@@ -52,4 +66,5 @@ export function disconnectSocket() {
   if (!socket) return;
   socket.disconnect();
   socket = null;
+  socketAuthToken = "";
 }

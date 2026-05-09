@@ -12,8 +12,9 @@ import dynamic from "next/dynamic";
 import { Theme, type EmojiClickData } from "emoji-picker-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { AppIcon } from "@/components/icons/AppIcon";
+import { useRoomStore } from "@/components/client/room/store/roomStore";
 import { initialsFromDisplayName } from "@/lib/display-name-initials";
-import type { ChatMessageWire } from "@/lib/ws-events";
+import type { LocalChatMessage } from "@/components/client/room/store/roomStore";
 
 // Lazy-loaded so the ~150 KB picker bundle only ships when the user
 // actually opens the emoji panel. SSR off — emoji-picker-react reads
@@ -47,20 +48,18 @@ const EmojiPicker = dynamic(() => import("emoji-picker-react"), {
  * Page.tsx owns the state machine. `clientNonce` is present only
  * while pending so the page can match the ack to the right row.
  */
-export type LocalChatMessage = ChatMessageWire & {
-  status: "pending" | "delivered";
-  clientNonce?: string;
-};
-
 export type ChatViewProps = {
+  roomId: string;
   messages: LocalChatMessage[];
+  unreadCount: number;
+  firstUnreadIndex: number;
   currentUserId: string | null;
   canSend: boolean;
-  /** Map of typers, keyed by userId. */
-  typers: Record<string, { name: string }>;
   onSend: (body: string) => void;
   /** Composer input change → drives typing.start/stop emits. */
   onTypingChange: (value: string) => void;
+  /** Marks all currently visible room chat as read. */
+  onMarkRead: () => void;
 };
 
 /** Initial windowed slice handed to Virtuoso. */
@@ -88,12 +87,15 @@ function formatTime(ms: number): string {
 }
 
 export function ChatView({
+  roomId,
   messages,
+  unreadCount,
+  firstUnreadIndex,
   currentUserId,
   canSend,
-  typers,
   onSend,
   onTypingChange,
+  onMarkRead,
 }: ChatViewProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [renderedCount, setRenderedCount] = useState(INITIAL_RENDER_COUNT);
@@ -108,10 +110,16 @@ export function ChatView({
    * activation (RoomSidePanel conditionally renders the active tab),
    * so this fires every time the user lands on Chat.
    */
-  const [bootSkeleton, setBootSkeleton] = useState(true);
+  const [bootPhase, setBootPhase] = useState<"visible" | "fading" | "hidden">(
+    "visible",
+  );
   useEffect(() => {
-    const t = window.setTimeout(() => setBootSkeleton(false), 220);
-    return () => window.clearTimeout(t);
+    const showTimer = window.setTimeout(() => setBootPhase("fading"), 220);
+    const hideTimer = window.setTimeout(() => setBootPhase("hidden"), 420);
+    return () => {
+      window.clearTimeout(showTimer);
+      window.clearTimeout(hideTimer);
+    };
   }, []);
 
   /** Composer input — needed for cursor-aware emoji insertion. */
@@ -160,6 +168,13 @@ export function ChatView({
     () => messages.slice(-renderedCount),
     [messages, renderedCount],
   );
+  const viewStartIndex = messages.length - view.length;
+  const unreadDividerIndexInView = useMemo(() => {
+    if (unreadCount <= 0 || firstUnreadIndex < 0 || view.length === 0) return -1;
+    if (firstUnreadIndex <= viewStartIndex) return 0;
+    const relative = firstUnreadIndex - viewStartIndex;
+    return relative >= view.length ? -1 : relative;
+  }, [unreadCount, firstUnreadIndex, view.length, viewStartIndex]);
 
   // When new messages arrive AND the user is scrolled up, surface the
   // pill. (Virtuoso's `followOutput="auto"` already handles the at-
@@ -170,17 +185,33 @@ export function ChatView({
       setHasUnreadPill(true);
     }
     prevMessageCountRef.current = messages.length;
-  }, [messages.length]);
+    if (isAtBottomRef.current && messages.length > 0) {
+      onMarkRead();
+    }
+  }, [messages.length, onMarkRead]);
+  const revealMoreTimerRef = useRef<number | null>(null);
 
   const handleScrolledToTop = useCallback(() => {
     if (renderedCount >= messages.length) return;
     if (skeletonActive) return;
+    if (revealMoreTimerRef.current !== null) {
+      window.clearTimeout(revealMoreTimerRef.current);
+      revealMoreTimerRef.current = null;
+    }
     setSkeletonActive(true);
-    window.setTimeout(() => {
+    revealMoreTimerRef.current = window.setTimeout(() => {
       setRenderedCount((c) => Math.min(c + RENDER_CHUNK, messages.length));
       setSkeletonActive(false);
+      revealMoreTimerRef.current = null;
     }, SKELETON_MS);
   }, [renderedCount, messages.length, skeletonActive]);
+  useEffect(() => {
+    return () => {
+      if (revealMoreTimerRef.current !== null) {
+        window.clearTimeout(revealMoreTimerRef.current);
+      }
+    };
+  }, []);
 
   const handlePillClick = useCallback(() => {
     if (view.length === 0) return;
@@ -261,18 +292,19 @@ export function ChatView({
     return () => document.removeEventListener("mousedown", onPointer);
   }, [emojiOpen]);
 
-  const typerList = Object.entries(typers); // [[userId, { name }], …]
-
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Scrollable message list — Virtuoso handles virtualization.
           A brief boot-time skeleton fills the panel for the first
           ~200 ms so tab-switch lands on something rather than a
           flash of blank measurement state. */}
-      <div className="relative min-h-0 flex-1">
-        {bootSkeleton ? (
-          <ChatBootSkeleton />
-        ) : view.length === 0 ? (
+      <div
+        className={[
+          "relative min-h-0 flex-1 transition-opacity duration-200",
+          bootPhase === "visible" ? "opacity-0" : "opacity-100",
+        ].join(" ")}
+      >
+        {view.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
             <AppIcon
               icon="lucide:message-square"
@@ -290,7 +322,10 @@ export function ChatView({
             followOutput="auto"
             atBottomStateChange={(atBottom) => {
               isAtBottomRef.current = atBottom;
-              if (atBottom) setHasUnreadPill(false);
+              if (atBottom) {
+                setHasUnreadPill(false);
+                onMarkRead();
+              }
             }}
             startReached={handleScrolledToTop}
             initialTopMostItemIndex={Math.max(0, view.length - 1)}
@@ -298,11 +333,13 @@ export function ChatView({
               Header: () =>
                 skeletonActive ? <ChatRowSkeletons count={4} /> : null,
             }}
-            itemContent={(_index, msg) => (
-              <ChatRow
-                msg={msg}
-                isOwn={msg.senderId === currentUserId}
-              />
+            itemContent={(index, msg) => (
+              <>
+                {index === unreadDividerIndexInView ? (
+                  <UnreadDivider unreadCount={unreadCount} />
+                ) : null}
+                <ChatRow msg={msg} isOwn={msg.senderId === currentUserId} />
+              </>
             )}
           />
         )}
@@ -321,37 +358,22 @@ export function ChatView({
           </button>
         ) : null}
       </div>
+      {bootPhase !== "hidden" ? (
+        <div
+          className={[
+            "pointer-events-none absolute inset-0 z-20 transition-opacity duration-200",
+            bootPhase === "fading" ? "opacity-0" : "opacity-100",
+          ].join(" ")}
+          aria-hidden
+        >
+          <ChatBootSkeleton />
+        </div>
+      ) : null}
 
       {/* Typing indicator — facepile of typers, sits just above the
           composer. Reuses the visual vocabulary of RoomMemberFacepile
           (gradient + initials + -ml-2 overlap + amber +N overflow). */}
-      {typerList.length > 0 ? (
-        <div className="relative z-10 flex shrink-0 items-center gap-2 px-2.5 pb-1 sm:px-3">
-          <span className="flex items-center pl-0.5">
-            {typerList.slice(0, 3).map(([userId, t], i) => (
-              <span
-                key={userId}
-                className={[
-                  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-background bg-linear-to-b from-zinc-200 to-zinc-300 text-[9px] font-semibold text-zinc-800 shadow-sm dark:from-zinc-600 dark:to-zinc-700 dark:text-zinc-100",
-                  i > 0 ? "-ml-2" : "",
-                ].join(" ")}
-                aria-hidden
-              >
-                {initialsFromDisplayName(t.name)}
-              </span>
-            ))}
-            {typerList.length > 3 ? (
-              <span
-                className="-ml-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-background bg-amber-200 text-[9px] font-bold text-zinc-900 shadow-sm dark:bg-amber-300/90 dark:text-zinc-950"
-                aria-hidden
-              >
-                +{typerList.length - 3}
-              </span>
-            ) : null}
-          </span>
-          <TypingDots />
-        </div>
-      ) : null}
+      <TypingIndicator roomId={roomId} />
 
       {/* Composer */}
       <form
@@ -444,6 +466,54 @@ export function ChatView({
           </div>
         ) : null}
       </form>
+    </div>
+  );
+}
+
+function UnreadDivider({ unreadCount }: { unreadCount: number }) {
+  const label = unreadCount === 1 ? "1 new message" : `${unreadCount} new messages`;
+  return (
+    <div className="px-2.5 py-1 sm:px-3" aria-hidden>
+      <div className="flex items-center gap-2">
+        <span className="h-px flex-1 bg-border/80 dark:bg-zinc-700" />
+        <span className="shrink-0 rounded-full border border-accent-blue/35 bg-accent-blue/10 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-blue">
+          {label}
+        </span>
+        <span className="h-px flex-1 bg-border/80 dark:bg-zinc-700" />
+      </div>
+    </div>
+  );
+}
+
+function TypingIndicator({ roomId }: { roomId: string }) {
+  const typers = useRoomStore(roomId, (s) => s.typers);
+  const typerList = Object.entries(typers);
+  if (typerList.length === 0) return null;
+  return (
+    <div className="relative z-10 flex shrink-0 items-center gap-2 px-2.5 pb-1 sm:px-3">
+      <span className="flex items-center pl-0.5">
+        {typerList.slice(0, 3).map(([userId, t], i) => (
+          <span
+            key={userId}
+            className={[
+              "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-background bg-linear-to-b from-zinc-200 to-zinc-300 text-[9px] font-semibold text-zinc-800 shadow-sm dark:from-zinc-600 dark:to-zinc-700 dark:text-zinc-100",
+              i > 0 ? "-ml-2" : "",
+            ].join(" ")}
+            aria-hidden
+          >
+            {initialsFromDisplayName(t.name)}
+          </span>
+        ))}
+        {typerList.length > 3 ? (
+          <span
+            className="-ml-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 border-background bg-amber-200 text-[9px] font-bold text-zinc-900 shadow-sm dark:bg-amber-300/90 dark:text-zinc-950"
+            aria-hidden
+          >
+            +{typerList.length - 3}
+          </span>
+        ) : null}
+      </span>
+      <TypingDots />
     </div>
   );
 }
@@ -542,8 +612,16 @@ function ChatRow({ msg, isOwn }: { msg: LocalChatMessage; isOwn: boolean }) {
  *  reading position (latest at bottom). */
 function ChatBootSkeleton() {
   return (
-    <div className="flex h-full flex-col justify-end overflow-hidden">
-      <ChatRowSkeletons count={6} />
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden pt-2">
+        <ChatRowSkeletons count={12} />
+      </div>
+      <div className="shrink-0 px-2.5 pb-1 sm:px-3">
+        <div className="h-4 w-20 animate-pulse rounded bg-muted/35 dark:bg-zinc-800/55" />
+      </div>
+      <div className="shrink-0 p-2">
+        <div className="h-11 animate-pulse rounded-md border border-border/70 bg-card/55 dark:border-zinc-800 dark:bg-zinc-900/60" />
+      </div>
     </div>
   );
 }

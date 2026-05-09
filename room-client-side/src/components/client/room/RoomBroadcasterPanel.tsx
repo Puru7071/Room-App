@@ -1,24 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
+import { useRoomStore } from "@/components/client/room/store/roomStore";
 import { initialsFromDisplayName } from "@/lib/display-name-initials";
 import { useYouTubeOEmbedTitle } from "@/lib/use-youtube-oembed-title";
-import type {
-  JoinRequestWire,
-  VideoAddRequestWire,
-} from "@/lib/ws-events";
+import type { JoinRequestWire, VideoAddRequestWire } from "@/lib/ws-events";
 import { youtubeThumbnailUrl } from "@/lib/youtube";
 import { relativeFromIso } from "@/lib/youtube-api";
 
 type RoomBroadcasterPanelProps = {
+  roomId: string;
   /** Toggles the leader-only carousel content. Non-owners see the empty
    *  state placeholder regardless of pending requests. */
   isOwner: boolean;
-  /** Pending join-room requests, fed by the parent's WS subscription. */
-  joinRequests: JoinRequestWire[];
-  /** Pending video-add requests (raised by non-leaders in LIMITED rooms). */
-  addRequests: VideoAddRequestWire[];
   onApproveJoin: (requestId: string) => void;
   onRejectJoin: (requestId: string) => void;
   onApproveAdd: (requestId: string) => void;
@@ -54,14 +49,15 @@ type BroadcastItem =
   | { kind: "add"; req: VideoAddRequestWire };
 
 export function RoomBroadcasterPanel({
+  roomId,
   isOwner,
-  joinRequests,
-  addRequests,
   onApproveJoin,
   onRejectJoin,
   onApproveAdd,
   onRejectAdd,
 }: RoomBroadcasterPanelProps) {
+  const joinRequests = useRoomStore(roomId, (s) => s.joinRequests);
+  const addRequests = useRoomStore(roomId, (s) => s.addRequests);
   // Merge the two lists into a single carousel feed. Joins come first,
   // then video-adds — order is stable so the leader's "current index"
   // doesn't jump as new items of the opposite type arrive.
@@ -74,22 +70,12 @@ export function RoomBroadcasterPanel({
   );
 
   const [currentIndex, setCurrentIndex] = useState(0);
+  const clampedIndex =
+    items.length === 0 ? 0 : Math.min(currentIndex, Math.max(items.length - 1, 0));
 
-  // Clamp the index when the merged list shrinks (request resolved /
-  // expired / rejected). Don't auto-jump on new arrivals.
-  useEffect(() => {
-    if (items.length === 0) {
-      if (currentIndex !== 0) setCurrentIndex(0);
-      return;
-    }
-    if (currentIndex >= items.length) {
-      setCurrentIndex(items.length - 1);
-    }
-  }, [items.length, currentIndex]);
-
-  const visible = isOwner ? items[currentIndex] ?? null : null;
-  const canPrev = currentIndex > 0;
-  const canNext = currentIndex < items.length - 1;
+  const visible = isOwner ? items[clampedIndex] ?? null : null;
+  const canPrev = clampedIndex > 0;
+  const canNext = clampedIndex < items.length - 1;
   const showSlider = isOwner && items.length > 0;
 
   return (
@@ -114,7 +100,7 @@ export function RoomBroadcasterPanel({
           </h3>
           {showSlider ? (
             <span className="text-[11px] font-medium tabular-nums text-muted/80">
-              · {currentIndex + 1} of {items.length}
+              · {clampedIndex + 1} of {items.length}
             </span>
           ) : null}
         </div>
@@ -122,7 +108,7 @@ export function RoomBroadcasterPanel({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
+              onClick={() => setCurrentIndex(Math.max(0, clampedIndex - 1))}
               disabled={!canPrev}
               aria-label="Previous request"
               className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-full text-muted transition hover:bg-muted/20 hover:text-foreground disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
@@ -131,9 +117,7 @@ export function RoomBroadcasterPanel({
             </button>
             <button
               type="button"
-              onClick={() =>
-                setCurrentIndex((i) => Math.min(items.length - 1, i + 1))
-              }
+              onClick={() => setCurrentIndex(Math.min(items.length - 1, clampedIndex + 1))}
               disabled={!canNext}
               aria-label="Next request"
               className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-full text-muted transition hover:bg-muted/20 hover:text-foreground disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
@@ -187,6 +171,7 @@ function EmptyState({ isOwner }: { isOwner: boolean }) {
 }
 
 function CountdownBar({ requestId, expiresAtIso }: { requestId: string; expiresAtIso: string }) {
+  // eslint-disable-next-line react-hooks/purity
   const remainingMs = Math.max(0, new Date(expiresAtIso).getTime() - Date.now());
   return (
     <div className="absolute left-0 right-0 top-0 h-[3px] overflow-hidden bg-muted/15">

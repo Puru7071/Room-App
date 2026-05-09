@@ -154,6 +154,7 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       handlersRef.current.onMemberJoined?.(p);
     };
     const onQueueAdded = (p: QueueAddedPayload) => {
+      if (p.roomId !== roomId) return;
       handlersRef.current.onQueueAdded?.(p);
     };
     const onPlaybackSync = (p: PlaybackSyncPayload) => {

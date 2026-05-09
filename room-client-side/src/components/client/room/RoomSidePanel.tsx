@@ -1,8 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import type { RoomQueueEntry } from "@/lib/room-types";
+import {
+  useRoomStore,
+  useRoomUiPrefsStore,
+} from "@/components/client/room/store/roomStore";
 import { ChatView, type ChatViewProps } from "./panels/ChatView";
 import { QueueView, type QueueViewProps } from "./panels/QueueView";
 import { RoomParticlesBackground } from "./panels/RoomParticlesBackground";
@@ -30,15 +34,15 @@ type QueueProps = Pick<
 
 type ChatProps = Pick<
   ChatViewProps,
-  | "messages"
+  | "roomId"
   | "currentUserId"
   | "canSend"
-  | "typers"
   | "onSend"
   | "onTypingChange"
 >;
 
 type RoomSidePanelProps = QueueProps & {
+  roomId: string;
   /** Current loop state from the server. */
   loop: boolean;
   /**
@@ -58,14 +62,10 @@ type RoomSidePanelProps = QueueProps & {
   /** True while the queue is being fetched from the server on page mount. */
   queueLoading?: boolean;
   /* ---- chat props (forwarded to ChatView) ---- */
-  /** Local chat list with delivery status. */
-  chatMessages: ChatProps["messages"];
   /** The viewing user's id, for own-vs-other message styling. */
   currentUserId: ChatProps["currentUserId"];
   /** Gate for the composer (LIMITED chat → owner-only). */
   canSendChat: ChatProps["canSend"];
-  /** Map of currently-typing peers, keyed by userId. */
-  typers: ChatProps["typers"];
   /** Submit a chat message. */
   onSendChat: ChatProps["onSend"];
   /** Composer input change → drives typing.start/stop emits. */
@@ -80,6 +80,7 @@ const TAB_DEFS: ReadonlyArray<{ id: SidePanelTab; label: string }> = [
 ];
 
 export function RoomSidePanel({
+  roomId,
   past,
   nowPlaying,
   cues,
@@ -91,15 +92,20 @@ export function RoomSidePanel({
   canControlPlayback,
   onLoopToggle,
   queueLoading = false,
-  chatMessages,
   currentUserId,
   canSendChat,
-  typers,
   onSendChat,
   onTypingChange,
   className = "",
 }: RoomSidePanelProps) {
   const [tab, setTab] = useState<SidePanelTab>("queue");
+  const chatUnreadCount = useRoomStore(roomId, (s) => s.chatUnreadCount);
+  const chatReceiveSoundEnabled = useRoomUiPrefsStore(
+    (s) => s.chatReceiveSoundEnabled,
+  );
+  const setChatReceiveSoundEnabled = useRoomUiPrefsStore(
+    (s) => s.setChatReceiveSoundEnabled,
+  );
 
   return (
     // Outer panel is `relative` so the shared particle canvas can sit
@@ -111,6 +117,11 @@ export function RoomSidePanel({
     <div
       className={`relative flex h-full rounded-xl min-h-0 flex-col overflow-hidden border border-border bg-zinc-100 text-foreground shadow-sm dark:border-zinc-800 dark:bg-[#0f0f0f] dark:text-zinc-100 ${className}`}
     >
+      <IncomingMessageSoundListener
+        roomId={roomId}
+        currentUserId={currentUserId}
+        enabled={chatReceiveSoundEnabled}
+      />
       <RoomParticlesBackground id="side-panel-particles" />
       <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-2.5 py-2 sm:px-3">
         <div
@@ -123,6 +134,7 @@ export function RoomSidePanel({
               key={t.id}
               label={t.label}
               active={tab === t.id}
+              unreadBadge={t.id === "chat" && tab !== "chat" ? chatUnreadCount : 0}
               onClick={() => setTab(t.id)}
             />
           ))}
@@ -132,6 +144,11 @@ export function RoomSidePanel({
             on={loop}
             canEdit={canEdit}
             onClick={onLoopToggle}
+          />
+        ) : tab === "chat" ? (
+          <SoundToggleButton
+            enabled={chatReceiveSoundEnabled}
+            onClick={() => setChatReceiveSoundEnabled(!chatReceiveSoundEnabled)}
           />
         ) : null}
       </div>
@@ -149,11 +166,10 @@ export function RoomSidePanel({
             loading={queueLoading}
           />
         ) : tab === "chat" ? (
-          <ChatView
-            messages={chatMessages}
+          <ChatMessagesPane
+            roomId={roomId}
             currentUserId={currentUserId}
             canSend={canSendChat}
-            typers={typers}
             onSend={onSendChat}
             onTypingChange={onTypingChange}
           />
@@ -165,15 +181,134 @@ export function RoomSidePanel({
   );
 }
 
+const ChatMessagesPane = memo(function ChatMessagesPane({
+  roomId,
+  currentUserId,
+  canSend,
+  onSend,
+  onTypingChange,
+}: {
+  roomId: string;
+  currentUserId: string | null;
+  canSend: boolean;
+  onSend: (body: string) => void;
+  onTypingChange: (value: string) => void;
+}) {
+  const messages = useRoomStore(roomId, (s) => s.chatMessages);
+  const unreadCount = useRoomStore(roomId, (s) => s.chatUnreadCount);
+  const firstUnreadIndex = useRoomStore(roomId, (s) => s.chatFirstUnreadIndex);
+  const markChatReadToLatest = useRoomStore(roomId, (s) => s.markChatReadToLatest);
+  return (
+    <ChatView
+      roomId={roomId}
+      messages={messages}
+      unreadCount={unreadCount}
+      firstUnreadIndex={firstUnreadIndex}
+      currentUserId={currentUserId}
+      canSend={canSend}
+      onSend={onSend}
+      onTypingChange={onTypingChange}
+      onMarkRead={markChatReadToLatest}
+    />
+  );
+});
+
+function IncomingMessageSoundListener({
+  roomId,
+  currentUserId,
+  enabled,
+}: {
+  roomId: string;
+  currentUserId: string | null;
+  enabled: boolean;
+}) {
+  const messageCount = useRoomStore(roomId, (s) => s.chatMessages.length);
+  const newestMessageId = useRoomStore(roomId, (s) => {
+    const latest = s.chatMessages[s.chatMessages.length - 1];
+    return latest?.id ?? null;
+  });
+  const newestSenderId = useRoomStore(roomId, (s) => {
+    const latest = s.chatMessages[s.chatMessages.length - 1];
+    return latest?.senderId ?? null;
+  });
+  const receivedSoundRef = useRef<HTMLAudioElement | null>(null);
+  const hasHydratedIncomingRef = useRef(false);
+  const prevIncomingLengthRef = useRef(messageCount);
+  const lastPlayedIncomingIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (messageCount === 0 || !newestMessageId) return;
+    if (!hasHydratedIncomingRef.current) {
+      hasHydratedIncomingRef.current = true;
+      prevIncomingLengthRef.current = messageCount;
+      lastPlayedIncomingIdRef.current = newestMessageId;
+      return;
+    }
+    if (messageCount <= prevIncomingLengthRef.current) {
+      prevIncomingLengthRef.current = messageCount;
+      return;
+    }
+    prevIncomingLengthRef.current = messageCount;
+    if (!enabled) return;
+    if (newestSenderId === currentUserId) return;
+    if (lastPlayedIncomingIdRef.current === newestMessageId) return;
+    lastPlayedIncomingIdRef.current = newestMessageId;
+    let audio = receivedSoundRef.current;
+    if (!audio) {
+      audio = new Audio("/audios/message-recieved.mp3");
+      audio.preload = "auto";
+      receivedSoundRef.current = audio;
+    }
+    audio.currentTime = 0;
+    void audio.play().catch(() => {});
+  }, [messageCount, newestMessageId, newestSenderId, enabled, currentUserId]);
+
+  return null;
+}
+
+function SoundToggleButton({
+  enabled,
+  onClick,
+}: {
+  enabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={enabled ? "Disable message sound" : "Enable message sound"}
+      aria-pressed={enabled}
+      title={enabled ? "Message sound on" : "Message sound off"}
+      className={[
+        "inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border transition outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40",
+        enabled
+          ? "border-blue-600 bg-blue-600 text-white shadow-sm"
+          : "border-border bg-card text-muted dark:bg-zinc-900 dark:text-zinc-500",
+      ].join(" ")}
+    >
+      <AppIcon
+        icon={enabled ? "lucide:bell" : "lucide:bell-off"}
+        className="h-3.5 w-3.5"
+        aria-hidden
+      />
+    </button>
+  );
+}
+
 function TabButton({
   label,
   active,
+  unreadBadge,
   onClick,
 }: {
   label: string;
   active: boolean;
+  unreadBadge?: number;
   onClick: () => void;
 }) {
+  const badgeLabel =
+    unreadBadge && unreadBadge > 0 ? (unreadBadge > 9 ? "9+" : String(unreadBadge)) : null;
   return (
     <button
       type="button"
@@ -182,12 +317,18 @@ function TabButton({
       onClick={onClick}
       className={[
         "cursor-pointer border-b-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition outline-none focus-visible:text-foreground",
+        "inline-flex items-center gap-1",
         active
           ? "border-foreground text-foreground dark:border-zinc-100 dark:text-zinc-100"
           : "border-transparent text-muted hover:text-foreground dark:text-zinc-500 dark:hover:text-zinc-300",
       ].join(" ")}
     >
       {label}
+      {badgeLabel ? (
+        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-accent-blue px-1.5 text-[10px] leading-4 font-bold text-white">
+          {badgeLabel}
+        </span>
+      ) : null}
     </button>
   );
 }
