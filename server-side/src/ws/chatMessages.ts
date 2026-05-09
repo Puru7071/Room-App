@@ -34,6 +34,8 @@ export function appendMessage(args: {
   senderId: string;
   senderName: string;
   body: string;
+  type?: "text" | "gif";
+  gifUrl?: string;
 }): ChatMessageWire {
   const msg: ChatMessageWire = {
     id: randomUUID(),
@@ -43,6 +45,10 @@ export function appendMessage(args: {
     body: args.body,
     createdAt: Date.now(),
   };
+  if (args.type === "gif" && typeof args.gifUrl === "string") {
+    msg.type = "gif";
+    msg.gifUrl = args.gifUrl;
+  }
   const list = messagesByRoom.get(args.roomId) ?? [];
   list.push(msg);
   // splice mutates in place so existing references stay valid.

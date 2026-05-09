@@ -354,3 +354,54 @@ html.dark .room-corner-ripple-flip {
     animation: none;
   }
 }
+
+/* Moment reactions — pure CSS glide (lightweight; tab-hidden bursts are dropped in JS). */
+@keyframes moment-reaction-glide {
+  0% {
+    transform: translate3d(var(--mr-x0, 0px), var(--mr-y0, 8px), 0)
+      rotate(var(--mr-r0, 0deg)) scale(var(--mr-s0, 1));
+    opacity: var(--mr-o0, 0);
+  }
+  24% {
+    transform: translate3d(var(--mr-x1, 0px), var(--mr-y1, -42px), 0)
+      rotate(var(--mr-r1, 0deg)) scale(var(--mr-s1, 1));
+    opacity: var(--mr-o1, 1);
+  }
+  54% {
+    transform: translate3d(var(--mr-x2, 0px), var(--mr-y2, -140px), 0)
+      rotate(var(--mr-r2, 0deg)) scale(var(--mr-s2, 1));
+    opacity: var(--mr-o2, 1);
+  }
+  100% {
+    transform: translate3d(var(--mr-x3, 0px), var(--mr-y3, -280px), 0)
+      rotate(var(--mr-r3, 0deg)) scale(var(--mr-s3, 1));
+    opacity: var(--mr-o3, 0);
+  }
+}
+
+.moment-reaction-glide {
+  animation-name: moment-reaction-glide;
+  /* Soft “film” ease — slow settle, less mechanical than linear segments */
+  animation-timing-function: cubic-bezier(0.13, 0.84, 0.22, 1);
+  animation-fill-mode: both;
+  will-change: transform, opacity;
+}
+
+@keyframes moment-reaction-soft-fade {
+  0% {
+    opacity: 0;
+  }
+  35% {
+    opacity: 0.88;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.moment-reaction-soft-fade {
+  animation-name: moment-reaction-soft-fade;
+  animation-duration: 0.5s;
+  animation-timing-function: ease-out;
+  animation-fill-mode: forwards;
+}

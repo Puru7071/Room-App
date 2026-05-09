@@ -1,5 +1,6 @@
 "use client";
 
+import { normalizeRoomId } from "@/components/client/room/momentReactionBus";
 import { useEffect, useRef } from "react";
 import { getSocket } from "@/lib/ws-client";
 import type {
@@ -13,6 +14,7 @@ import type {
   ChatMessagePayload,
   ChatMessageWire,
   ChatTypingBroadcastPayload,
+  MomentReactionBroadcastPayload,
   JoinRequestWire,
   MemberJoinedPayload,
   PlaybackPollPayload,
@@ -99,6 +101,8 @@ type Handlers = {
   onChatTypingStart?: (payload: ChatTypingBroadcastPayload) => void;
   /** A peer stopped typing (explicit, or via TTL/disconnect synth). */
   onChatTypingStop?: (payload: ChatTypingBroadcastPayload) => void;
+  /** Ephemeral emoji burst from any member (including self echo). */
+  onMomentReaction?: (payload: MomentReactionBroadcastPayload) => void;
 };
 
 /**
@@ -205,6 +209,10 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       if (p.roomId !== roomId) return;
       handlersRef.current.onChatTypingStop?.(p);
     };
+    const onMomentReaction = (p: MomentReactionBroadcastPayload) => {
+      if (normalizeRoomId(p.roomId) !== normalizeRoomId(roomId)) return;
+      handlersRef.current.onMomentReaction?.(p);
+    };
 
     socket.on("room.request.list", onList);
     socket.on("room.request.created", onCreated);
@@ -226,6 +234,7 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
     socket.on("room.chat.message", onChatMessage);
     socket.on("room.chat.typing.start", onChatTypingStart);
     socket.on("room.chat.typing.stop", onChatTypingStop);
+    socket.on("room.moment.reaction", onMomentReaction);
 
     // Subscribe both on initial mount AND on every reconnect — Socket.IO
     // forgets which channels the client was in across a disconnect.
@@ -254,6 +263,7 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       socket.off("room.chat.message", onChatMessage);
       socket.off("room.chat.typing.start", onChatTypingStart);
       socket.off("room.chat.typing.stop", onChatTypingStop);
+      socket.off("room.moment.reaction", onMomentReaction);
       socket.off("connect", subscribe);
     };
   }, [roomId]);

@@ -169,6 +169,8 @@ export type ChatMessageWire = {
   senderId: string;
   senderName: string;
   body: string;
+  type?: "text" | "gif";
+  gifUrl?: string;
   createdAt: number; // ms epoch
 };
 
@@ -177,6 +179,8 @@ export type ChatSendPayload = {
   roomId: string;
   body: string;
   clientNonce: string;
+  type?: "text" | "gif";
+  gifUrl?: string;
 };
 
 /**
@@ -207,6 +211,24 @@ export type ChatTypingPayload = { roomId: string };
 /** Server → peers (NOT sender): a user started/stopped typing. */
 export type ChatTypingBroadcastPayload = {
   roomId: string;
+  userId: string;
+  userName: string;
+};
+
+/* ------------------------------------------------------------------ */
+/* Moment reactions                                                    */
+/* ------------------------------------------------------------------ */
+
+export type MomentReactionSendPayload = {
+  roomId: string;
+  emoji: string;
+  burstId: string;
+};
+
+export type MomentReactionBroadcastPayload = {
+  roomId: string;
+  emoji: string;
+  burstId: string;
   userId: string;
   userName: string;
 };

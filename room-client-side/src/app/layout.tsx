@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Outfit } from "next/font/google";
 import { AppErrorBoundary } from "@/components/client/AppErrorBoundary";
 import { AppToaster } from "@/components/client/AppToaster";
 import { ThemeProvider } from "@/components/client/theme/ThemeContext";
@@ -19,6 +19,14 @@ const geistMono = Geist_Mono({
   adjustFontFallback: true,
 });
 
+/** Distinct from Geist — used only for the chat composer GIF label. */
+const outfit = Outfit({
+  variable: "--font-outfit",
+  subsets: ["latin"],
+  weight: ["600", "700"],
+  adjustFontFallback: true,
+});
+
 export const metadata: Metadata = {
   title: APP_DISPLAY_NAME,
   description:
@@ -34,7 +42,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${outfit.variable} h-full antialiased`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />

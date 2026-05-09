@@ -213,6 +213,9 @@ export type ChatMessageWire = {
   senderId: string;
   senderName: string;
   body: string;
+  /** When `"gif"`, `gifUrl` is the animated asset; `body` is usually empty. */
+  type?: "text" | "gif";
+  gifUrl?: string;
   createdAt: number; // ms epoch
 };
 
@@ -221,6 +224,9 @@ export type ChatSendPayload = {
   roomId: string;
   body: string;
   clientNonce: string;
+  /** Omit or `"text"` for normal messages; `"gif"` with `gifUrl` for Giphy. */
+  type?: "text" | "gif";
+  gifUrl?: string;
 };
 
 /**
@@ -255,6 +261,27 @@ export type ChatTypingBroadcastPayload = {
   userName: string;
 };
 
+/* ------------------------------------------------------------------ */
+/* Moment reactions (ephemeral bursts — no persistence)               */
+/* ------------------------------------------------------------------ */
+
+/** Client → server: broadcast an emoji burst to everyone in `room:${roomId}`. */
+export type MomentReactionSendPayload = {
+  roomId: string;
+  emoji: string;
+  /** Client-generated id so the sender can dedupe optimistic + echo. */
+  burstId: string;
+};
+
+/** Server → everyone in the room (including sender). */
+export type MomentReactionBroadcastPayload = {
+  roomId: string;
+  emoji: string;
+  burstId: string;
+  userId: string;
+  userName: string;
+};
+
 /** Per-socket data attached on auth. Read in handlers via `socket.data`. */
 export type SocketData = {
   userId: string;
@@ -264,4 +291,9 @@ export type SocketData = {
    * on first send. Refills 1 token / 400 ms up to a cap of 5.
    */
   chatBucket?: { tokens: number; lastRefill: number };
+  /**
+   * Separate bucket for moment reactions — cheaper ceiling than chat so
+   * hype bursts don't contend with messages.
+   */
+  reactionBucket?: { tokens: number; lastRefill: number };
 };

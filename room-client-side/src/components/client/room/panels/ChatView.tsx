@@ -15,6 +15,7 @@ import { AppIcon } from "@/components/icons/AppIcon";
 import { useRoomStore } from "@/components/client/room/store/roomStore";
 import { initialsFromDisplayName } from "@/lib/display-name-initials";
 import type { LocalChatMessage } from "@/components/client/room/store/roomStore";
+import { ChatGifPicker } from "./ChatGifPicker";
 
 // Lazy-loaded so the ~150 KB picker bundle only ships when the user
 // actually opens the emoji panel. SSR off — emoji-picker-react reads
@@ -56,6 +57,8 @@ export type ChatViewProps = {
   currentUserId: string | null;
   canSend: boolean;
   onSend: (body: string) => void;
+  /** Sends a Giphy-backed GIF (`type: "gif"` + URL on the wire). */
+  onSendGif: (gifUrl: string) => void;
   /** Composer input change → drives typing.start/stop emits. */
   onTypingChange: (value: string) => void;
   /** Marks all currently visible room chat as read. */
@@ -94,6 +97,7 @@ export function ChatView({
   currentUserId,
   canSend,
   onSend,
+  onSendGif,
   onTypingChange,
   onMarkRead,
 }: ChatViewProps) {
@@ -126,9 +130,12 @@ export function ChatView({
   const inputRef = useRef<HTMLInputElement>(null);
   /** Whether the emoji panel is open. Anchored to the trigger button. */
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [gifOpen, setGifOpen] = useState(false);
   /** Wraps the emoji-picker popover so click-outside can close it. */
   const emojiPanelRef = useRef<HTMLDivElement>(null);
   const emojiTriggerRef = useRef<HTMLButtonElement>(null);
+  const gifPanelRef = useRef<HTMLDivElement>(null);
+  const gifTriggerRef = useRef<HTMLButtonElement>(null);
   /**
    * Match the picker's theme to the app's. Read once on mount; if the
    * user toggles the app theme while the panel is open, the picker
@@ -292,6 +299,18 @@ export function ChatView({
     return () => document.removeEventListener("mousedown", onPointer);
   }, [emojiOpen]);
 
+  useEffect(() => {
+    if (!gifOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (gifPanelRef.current?.contains(target)) return;
+      if (gifTriggerRef.current?.contains(target)) return;
+      setGifOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    return () => document.removeEventListener("mousedown", onPointer);
+  }, [gifOpen]);
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Scrollable message list — Virtuoso handles virtualization.
@@ -400,12 +419,40 @@ export function ChatView({
             ].join(" ")}
           />
           <button
+            ref={gifTriggerRef}
+            type="button"
+            aria-label={gifOpen ? "Close GIF search" : "Search GIFs"}
+            aria-expanded={gifOpen}
+            disabled={!canSend}
+            onClick={() => {
+              setGifOpen((o) => !o);
+              setEmojiOpen(false);
+            }}
+            className={[
+              "inline-flex shrink-0 items-center justify-center rounded-md px-1 py-0.5 text-muted/70 transition outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-500",
+              canSend
+                ? "cursor-pointer hover:text-foreground dark:hover:text-zinc-100"
+                : "",
+            ].join(" ")}
+          >
+            <span
+              className="text-[13px] font-semibold leading-none tracking-wide"
+              style={{ fontFamily: "var(--font-outfit), system-ui, sans-serif" }}
+              aria-hidden
+            >
+              GIF
+            </span>
+          </button>
+          <button
             ref={emojiTriggerRef}
             type="button"
             aria-label={emojiOpen ? "Close emoji picker" : "Open emoji picker"}
             aria-expanded={emojiOpen}
             disabled={!canSend}
-            onClick={() => setEmojiOpen((o) => !o)}
+            onClick={() => {
+              setEmojiOpen((o) => !o);
+              setGifOpen(false);
+            }}
             // Slightly dimmer base color than the send button
             // (`text-muted/70 dark:text-zinc-500` vs send's
             // `text-muted dark:text-zinc-400`) to compensate for the
@@ -445,6 +492,25 @@ export function ChatView({
             without changing the picker's internal layout; the
             transform-origin keeps the bottom-right of the picker
             anchored to the trigger button as it scales. */}
+        {gifOpen ? (
+          <div
+            ref={gifPanelRef}
+            className="absolute right-2 bottom-full z-30 mb-1"
+            style={{
+              transform: "scale(0.85)",
+              transformOrigin: "bottom right",
+            }}
+          >
+            <ChatGifPicker
+              onSelect={(url) => {
+                onSendGif(url);
+                playSentSound();
+                setGifOpen(false);
+              }}
+              onClose={() => setGifOpen(false)}
+            />
+          </div>
+        ) : null}
         {emojiOpen ? (
           <div
             ref={emojiPanelRef}
@@ -523,6 +589,38 @@ function TypingIndicator({ roomId }: { roomId: string }) {
  *  Others' messages left-align with a neutral bubble, the sender's
  *  initials avatar, and a sender-name eyebrow. */
 function ChatRow({ msg, isOwn }: { msg: LocalChatMessage; isOwn: boolean }) {
+  const isGif = msg.type === "gif" && Boolean(msg.gifUrl);
+
+  const meta = (
+    <span
+      className={[
+        "inline-flex items-center gap-1 text-[10px] leading-none",
+        isGif
+          ? "rounded bg-black/55 px-1 py-0.5 text-white/95 backdrop-blur-[2px]"
+          : isOwn
+            ? "text-muted/70 dark:text-zinc-500"
+            : "text-muted/70 dark:text-zinc-500",
+      ].join(" ")}
+    >
+      <span>{formatTime(msg.createdAt)}</span>
+      {isOwn ? (
+        msg.status === "pending" ? (
+          <AppIcon
+            icon="lucide:check"
+            className={`h-3 w-3 ${isGif ? "text-white/90" : "text-muted/80"}`}
+            aria-label="Sent"
+          />
+        ) : (
+          <AppIcon
+            icon="lucide:check-check"
+            className={`h-3.5 w-3.5 ${isGif ? "text-sky-300" : "text-blue-500 dark:text-blue-400"}`}
+            aria-label="Delivered"
+          />
+        )
+      ) : null}
+    </span>
+  );
+
   return (
     <div
       className={[
@@ -549,57 +647,44 @@ function ChatRow({ msg, isOwn }: { msg: LocalChatMessage; isOwn: boolean }) {
             {msg.senderName}
           </p>
         ) : null}
-        <div
-          className={[
-            "relative rounded-2xl px-3 py-1.5 text-sm leading-snug",
-            isOwn
-              ? "bg-accent-blue/15 text-foreground dark:bg-accent-blue/25 dark:text-zinc-100"
-              : "bg-foreground/[0.06] text-foreground dark:bg-zinc-100/[0.06] dark:text-zinc-100",
-          ].join(" ")}
-        >
-          <span className="whitespace-pre-wrap break-words">{msg.body}</span>
-          {/* WhatsApp-style meta placement. An invisible inline spacer
-              the same size as the meta sits at the end of the text so
-              the bubble's content width includes the meta's footprint
-              — when the last line of text would clip the meta, the
-              spacer wraps to a new line, leaving room for the
-              absolutely-positioned real meta at the bottom-right. For
-              short messages the meta sits next to the text on the
-              same line; for wrapping messages it lands in the corner.
-              Keeps the bubble's height growth to a minimum. */}
-          <span
-            className="invisible ml-2 inline-flex select-none items-center gap-1 align-bottom text-[10px] leading-none"
-            aria-hidden
-          >
-            <span>{formatTime(msg.createdAt)}</span>
-            {isOwn ? <span className="block h-3.5 w-3.5" /> : null}
-          </span>
-          <span
+        {isGif ? (
+          <div
             className={[
-              "absolute right-2.5 bottom-1 inline-flex items-center gap-1 text-[10px] leading-none",
+              "relative inline-block max-w-[min(200px,72vw)] overflow-hidden rounded-2xl",
               isOwn
-                ? "text-muted/70 dark:text-zinc-500"
-                : "text-muted/70 dark:text-zinc-500",
+                ? "ring-1 ring-accent-blue/25 dark:ring-accent-blue/35"
+                : "ring-1 ring-foreground/10 dark:ring-zinc-600",
             ].join(" ")}
           >
-            <span>{formatTime(msg.createdAt)}</span>
-            {isOwn ? (
-              msg.status === "pending" ? (
-                <AppIcon
-                  icon="lucide:check"
-                  className="h-3 w-3 text-muted/80"
-                  aria-label="Sent"
-                />
-              ) : (
-                <AppIcon
-                  icon="lucide:check-check"
-                  className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400"
-                  aria-label="Delivered"
-                />
-              )
-            ) : null}
-          </span>
-        </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={msg.gifUrl}
+              alt=""
+              loading="lazy"
+              className="block max-h-40 w-full object-cover"
+            />
+            <span className="absolute right-1.5 bottom-1.5">{meta}</span>
+          </div>
+        ) : (
+          <div
+            className={[
+              "relative rounded-2xl px-3 py-1.5 text-sm leading-snug",
+              isOwn
+                ? "bg-accent-blue/15 text-foreground dark:bg-accent-blue/25 dark:text-zinc-100"
+                : "bg-foreground/[0.06] text-foreground dark:bg-zinc-100/[0.06] dark:text-zinc-100",
+            ].join(" ")}
+          >
+            <span className="whitespace-pre-wrap break-words">{msg.body}</span>
+            <span
+              className="invisible ml-2 inline-flex select-none items-center gap-1 align-bottom text-[10px] leading-none"
+              aria-hidden
+            >
+              <span>{formatTime(msg.createdAt)}</span>
+              {isOwn ? <span className="block h-3.5 w-3.5" /> : null}
+            </span>
+            <span className="absolute right-2.5 bottom-1">{meta}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -620,7 +705,15 @@ function ChatBootSkeleton() {
         <div className="h-4 w-20 animate-pulse rounded bg-muted/35 dark:bg-zinc-800/55" />
       </div>
       <div className="shrink-0 p-2">
-        <div className="h-11 animate-pulse rounded-md border border-border/70 bg-card/55 dark:border-zinc-800 dark:bg-zinc-900/60" />
+        <div className="flex h-11 items-center gap-2 rounded-md border border-border/70 bg-card/55 px-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+          <div className="h-4 min-w-0 flex-1 animate-pulse rounded bg-muted/35 dark:bg-zinc-800/55" />
+          <div
+            className="h-5 w-8 shrink-0 animate-pulse rounded bg-muted/45 dark:bg-zinc-800/65"
+            aria-hidden
+          />
+          <div className="h-7 w-7 shrink-0 animate-pulse rounded-md bg-muted/40 dark:bg-zinc-800/60" />
+          <div className="h-7 w-7 shrink-0 animate-pulse rounded-md bg-muted/40 dark:bg-zinc-800/60" />
+        </div>
       </div>
     </div>
   );
@@ -631,21 +724,47 @@ function ChatBootSkeleton() {
 function ChatRowSkeletons({ count }: { count: number }) {
   return (
     <ul className="list-none space-y-0 py-1.5 pl-0 pr-0 sm:py-2" aria-hidden>
-      {Array.from({ length: count }).map((_, i) => (
-        <li key={i} className="px-2.5 py-1 sm:px-3">
-          <div
-            className={[
-              "flex w-full",
-              i % 2 === 0 ? "justify-start" : "justify-end",
-            ].join(" ")}
-          >
-            <div className="max-w-[60%] animate-pulse space-y-1.5">
-              <div className="h-2.5 w-20 rounded bg-muted/40 dark:bg-zinc-800/60" />
-              <div className="h-7 w-44 rounded-2xl bg-muted/40 dark:bg-zinc-800/60" />
+      {Array.from({ length: count }).map((_, i) => {
+        const isOwn = i % 2 === 1;
+        /** Mix GIF-shaped rows so the shell hints at media messages. */
+        const isGifRow = i % 3 === 1;
+        return (
+          <li key={i} className="px-2.5 py-1 sm:px-3">
+            <div
+              className={[
+                "flex w-full items-end gap-1.5",
+                isOwn ? "justify-end" : "justify-start",
+              ].join(" ")}
+            >
+              {!isOwn ? (
+                <div className="h-7 w-7 shrink-0 animate-pulse rounded-full bg-muted/40 dark:bg-zinc-800/60" />
+              ) : null}
+              <div
+                className={[
+                  "min-w-0",
+                  isGifRow ? "max-w-[min(200px,72vw)]" : "max-w-[60%]",
+                ].join(" ")}
+              >
+                {!isGifRow ? (
+                  <div className="animate-pulse space-y-1.5">
+                    {!isOwn ? (
+                      <div className="h-2.5 w-20 rounded bg-muted/40 dark:bg-zinc-800/60" />
+                    ) : null}
+                    <div className="h-7 w-44 rounded-2xl bg-muted/40 dark:bg-zinc-800/60" />
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {!isOwn ? (
+                      <div className="h-2.5 w-16 rounded bg-muted/40 dark:bg-zinc-800/60" />
+                    ) : null}
+                    <div className="aspect-5/4 w-full animate-pulse rounded-2xl bg-muted/40 dark:bg-zinc-800/60" />
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

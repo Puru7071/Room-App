@@ -38,6 +38,7 @@ type ChatProps = Pick<
   | "currentUserId"
   | "canSend"
   | "onSend"
+  | "onSendGif"
   | "onTypingChange"
 >;
 
@@ -68,6 +69,8 @@ type RoomSidePanelProps = QueueProps & {
   canSendChat: ChatProps["canSend"];
   /** Submit a chat message. */
   onSendChat: ChatProps["onSend"];
+  /** Send a GIF by URL (Giphy CDN). */
+  onSendChatGif: ChatProps["onSendGif"];
   /** Composer input change → drives typing.start/stop emits. */
   onTypingChange: ChatProps["onTypingChange"];
   className?: string;
@@ -95,6 +98,7 @@ export function RoomSidePanel({
   currentUserId,
   canSendChat,
   onSendChat,
+  onSendChatGif,
   onTypingChange,
   className = "",
 }: RoomSidePanelProps) {
@@ -171,6 +175,7 @@ export function RoomSidePanel({
             currentUserId={currentUserId}
             canSend={canSendChat}
             onSend={onSendChat}
+            onSendGif={onSendChatGif}
             onTypingChange={onTypingChange}
           />
         ) : (
@@ -186,12 +191,14 @@ const ChatMessagesPane = memo(function ChatMessagesPane({
   currentUserId,
   canSend,
   onSend,
+  onSendGif,
   onTypingChange,
 }: {
   roomId: string;
   currentUserId: string | null;
   canSend: boolean;
   onSend: (body: string) => void;
+  onSendGif: (gifUrl: string) => void;
   onTypingChange: (value: string) => void;
 }) {
   const messages = useRoomStore(roomId, (s) => s.chatMessages);
@@ -207,6 +214,7 @@ const ChatMessagesPane = memo(function ChatMessagesPane({
       currentUserId={currentUserId}
       canSend={canSend}
       onSend={onSend}
+      onSendGif={onSendGif}
       onTypingChange={onTypingChange}
       onMarkRead={markChatReadToLatest}
     />

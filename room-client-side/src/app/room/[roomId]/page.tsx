@@ -14,12 +14,17 @@ import { useParams } from "next/navigation";
 import { useAuthToken } from "@/components/client/auth/useAuthToken";
 import { AmbientPageBackground } from "@/components/layout/AmbientPageBackground";
 import { RoomAmbientBackdrop } from "@/components/client/room/RoomAmbientBackdrop";
+import { MomentReactionOverlay } from "@/components/client/room/MomentReactionOverlay";
 import { RoomNowPlayingCard } from "@/components/client/room/RoomNowPlayingCard";
 import { RoomPageHeader } from "@/components/client/room/RoomPageHeader";
 import { RoomPendingState } from "@/components/client/room/RoomPendingState";
 import { RoomBroadcasterPanel } from "@/components/client/room/RoomBroadcasterPanel";
 import { RoomSidePanel } from "@/components/client/room/RoomSidePanel";
 import { GlobalLoader } from "@/components/layout/GlobalLoader";
+import {
+  normalizeRoomId,
+  publishMomentReactionBurst,
+} from "@/components/client/room/momentReactionBus";
 import { RoomWatchLayout } from "@/components/client/room/RoomWatchLayout";
 import {
   clearRoomStore,
@@ -64,7 +69,8 @@ type JoinStatus = "joining" | "joined" | "pending" | "rejected";
 
 export default function RoomPage() {
   const params = useParams<{ roomId: string }>();
-  const roomId = params.roomId;
+  /** Single canonical id — matches server + WS payloads (encoding-safe). */
+  const roomId = normalizeRoomId(params.roomId);
   const router = useRouter();
 
   const { user } = useAuthToken();
@@ -393,6 +399,13 @@ export default function RoomPage() {
       delete typerTimeoutsRef.current[userId];
       getRoomStore(roomId).getState().clearTyper(userId);
     },
+    /* Moment reactions — feed the overlay bus only (no Zustand touches). */
+    onMomentReaction: (p) => {
+      publishMomentReactionBurst(roomId, {
+        emoji: p.emoji,
+        burstId: p.burstId,
+      });
+    },
   });
 
   const handleApproveJoin = useCallback((requestId: string) => {
@@ -428,6 +441,44 @@ export default function RoomPage() {
       getSocket().emit(
         "room.chat.send",
         { roomId, body: trimmed, clientNonce },
+        (ack: ChatSendAck) => {
+          if (ack.ok) {
+            getRoomStore(roomId)
+              .getState()
+              .markChatDelivered(clientNonce, ack.id, ack.createdAt);
+          } else {
+            toast.error(`Couldn't send: ${ack.reason}`);
+            getRoomStore(roomId).getState().removeOptimisticChatMessage(clientNonce);
+          }
+        },
+      );
+    },
+    [roomId, user],
+  );
+
+  const handleSendChatGif = useCallback(
+    (gifUrl: string) => {
+      if (!user) return;
+      const trimmed = gifUrl.trim();
+      if (trimmed.length === 0 || trimmed.length > 2048) return;
+      if (!trimmed.startsWith("https://")) return;
+      const clientNonce = crypto.randomUUID();
+      const optimistic: LocalChatMessage = {
+        id: clientNonce,
+        roomId,
+        senderId: user.userId,
+        senderName: user.username,
+        body: "",
+        type: "gif",
+        gifUrl: trimmed,
+        createdAt: Date.now(),
+        status: "pending",
+        clientNonce,
+      };
+      getRoomStore(roomId).getState().addOptimisticChatMessage(optimistic);
+      getSocket().emit(
+        "room.chat.send",
+        { roomId, body: "", clientNonce, type: "gif", gifUrl: trimmed },
         (ack: ChatSendAck) => {
           if (ack.ok) {
             getRoomStore(roomId)
@@ -897,51 +948,55 @@ export default function RoomPage() {
         <main className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
           <RoomWatchLayout
             player={
-              <RoomYouTubePlayer
-                ref={playerHandleRef}
-                phase={phase}
-                playlist={playlist}
-                currentIndex={currentIndex}
-                onAdvance={handleAdvance}
-                interactive={canControlPlayback}
-                onPlayStateChange={(s) =>
-                  emitPlayback({
-                    state: s,
-                    time: playerHandleRef.current?.getCurrentTime() ?? 0,
-                  })
-                }
-                onSeek={(t) =>
-                  emitPlayback({ state: "playing", time: t })
-                }
-                onBufferLag={() => requestFreshSnapshot()}
-                onReady={() => {
-                  // Drain any cross-user `playback.update` that arrived
-                  // mid-load (different user scrubbed while we were
-                  // mounting). The new snapshot path uses onFirstPlay
-                  // (below) instead, but real updates can still land
-                  // here.
-                  if (
-                    pendingSyncRef.current &&
-                    !queueLoading &&
-                    playerHandleRef.current?.isReady()
-                  ) {
-                    applySync(pendingSyncRef.current);
-                    pendingSyncRef.current = null;
+              <div className="relative min-h-0 w-full">
+                <RoomYouTubePlayer
+                  ref={playerHandleRef}
+                  phase={phase}
+                  playlist={playlist}
+                  currentIndex={currentIndex}
+                  onAdvance={handleAdvance}
+                  interactive={canControlPlayback}
+                  onPlayStateChange={(s) =>
+                    emitPlayback({
+                      state: s,
+                      time: playerHandleRef.current?.getCurrentTime() ?? 0,
+                    })
                   }
-                }}
-                onFirstPlay={() => {
-                  // Gate the snapshot request on "video is actually
-                  // playing" — NOT just "iframe is ready". seekTo /
-                  // loadPlaylist applied during YT's autoplay startup
-                  // (the window between onReady and first PLAYING) are
-                  // race-prone; PLAYING means YT is past that and
-                  // commands land deterministically.
-                  setPlayerReady(true);
-                }}
-              />
+                  onSeek={(t) =>
+                    emitPlayback({ state: "playing", time: t })
+                  }
+                  onBufferLag={() => requestFreshSnapshot()}
+                  onReady={() => {
+                    // Drain any cross-user `playback.update` that arrived
+                    // mid-load (different user scrubbed while we were
+                    // mounting). The new snapshot path uses onFirstPlay
+                    // (below) instead, but real updates can still land
+                    // here.
+                    if (
+                      pendingSyncRef.current &&
+                      !queueLoading &&
+                      playerHandleRef.current?.isReady()
+                    ) {
+                      applySync(pendingSyncRef.current);
+                      pendingSyncRef.current = null;
+                    }
+                  }}
+                  onFirstPlay={() => {
+                    // Gate the snapshot request on "video is actually
+                    // playing" — NOT just "iframe is ready". seekTo /
+                    // loadPlaylist applied during YT's autoplay startup
+                    // (the window between onReady and first PLAYING) are
+                    // race-prone; PLAYING means YT is past that and
+                    // commands land deterministically.
+                    setPlayerReady(true);
+                  }}
+                />
+                <MomentReactionOverlay roomId={roomId} />
+              </div>
             }
             nowPlaying={
               <RoomNowPlayingCard
+                roomId={roomId}
                 videoId={nowPlaying?.videoId ?? null}
                 addedByName={nowPlaying?.addedByName ?? null}
               />
@@ -963,6 +1018,7 @@ export default function RoomPage() {
                 currentUserId={user?.userId ?? null}
                 canSendChat={canSendChat}
                 onSendChat={handleSendChat}
+                onSendChatGif={handleSendChatGif}
                 onTypingChange={handleTypingChange}
                 className="min-h-0"
               />

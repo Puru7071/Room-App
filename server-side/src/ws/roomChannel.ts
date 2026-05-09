@@ -30,6 +30,7 @@ import type {
   ChatSendAck,
   ChatSendPayload,
   ChatTypingPayload,
+  MomentReactionSendPayload,
   PlaybackReportPayload,
   PlaybackRequestSnapshotPayload,
   PlaybackSyncPayload,
@@ -78,6 +79,25 @@ async function userMaySubscribe(
   return (await classifyMembership(userId, roomId)) !== "none";
 }
 
+/** Restrict GIF URLs to Giphy media hosts so chat cannot embed arbitrary URLs. */
+function isAllowedGiphyMediaUrl(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    if (u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    return (
+      h === "media.giphy.com" ||
+      h === "media1.giphy.com" ||
+      h === "media2.giphy.com" ||
+      h === "media3.giphy.com" ||
+      h === "media4.giphy.com" ||
+      h === "i.giphy.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Per-socket chat-send token bucket. Cap of 5, refill 1 token / 400 ms.
  * Cheap defence against a malicious client spamming `room.chat.send`
@@ -111,6 +131,36 @@ function consumeChatToken(socket: { data: SocketData }): boolean {
   return true;
 }
 
+/** Moment bursts — cap 8, refill 1 token / ~550 ms (spam guard). */
+const REACTION_BUCKET_CAP = 8;
+const REACTION_REFILL_MS = 550;
+
+function consumeReactionToken(socket: { data: SocketData }): boolean {
+  const now = Date.now();
+  const bucket = socket.data.reactionBucket ?? {
+    tokens: REACTION_BUCKET_CAP,
+    lastRefill: now,
+  };
+  const elapsed = now - bucket.lastRefill;
+  if (elapsed > 0) {
+    const refill = Math.floor(elapsed / REACTION_REFILL_MS);
+    if (refill > 0) {
+      bucket.tokens = Math.min(
+        REACTION_BUCKET_CAP,
+        bucket.tokens + refill,
+      );
+      bucket.lastRefill = bucket.lastRefill + refill * REACTION_REFILL_MS;
+    }
+  }
+  if (bucket.tokens <= 0) {
+    socket.data.reactionBucket = bucket;
+    return false;
+  }
+  bucket.tokens -= 1;
+  socket.data.reactionBucket = bucket;
+  return true;
+}
+
 export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
   const data = socket.data as SocketData;
 
@@ -121,7 +171,8 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
 
   socket.on("room.subscribe", async (payload: RoomSubscribePayload) => {
     if (typeof payload?.roomId !== "string") return;
-    const { roomId } = payload;
+    const roomId = payload.roomId.trim();
+    if (!roomId) return;
 
     const kind = await classifyMembership(data.userId, roomId);
     if (kind === "none") {
@@ -461,7 +512,6 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       // Validate shape. Bail without ack on garbage input.
       if (
         typeof p?.roomId !== "string" ||
-        typeof p?.body !== "string" ||
         typeof p?.clientNonce !== "string"
       ) {
         return;
@@ -470,9 +520,22 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       const fail = (reason: Extract<ChatSendAck, { ok: false }>["reason"]) =>
         ack?.({ ok: false, reason, clientNonce: nonce });
 
-      const body = p.body.trim();
-      if (body.length === 0) return fail("empty");
-      if (body.length > 2000) return fail("too-long");
+      const isGif = p.type === "gif";
+      let body = "";
+      let gifUrl: string | undefined;
+
+      if (isGif) {
+        if (typeof p.gifUrl !== "string") return fail("empty");
+        gifUrl = p.gifUrl.trim();
+        if (gifUrl.length === 0) return fail("empty");
+        if (gifUrl.length > 2048) return fail("too-long");
+        if (!isAllowedGiphyMediaUrl(gifUrl)) return fail("forbidden");
+      } else {
+        if (typeof p.body !== "string") return;
+        body = p.body.trim();
+        if (body.length === 0) return fail("empty");
+        if (body.length > 2000) return fail("too-long");
+      }
 
       // chatRights gate: LIMITED → owner-only.
       const room = await prisma.room.findUnique({
@@ -504,6 +567,7 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
         senderId: data.userId,
         senderName: data.username,
         body,
+        ...(isGif ? { type: "gif" as const, gifUrl: gifUrl! } : {}),
       });
 
       // Broadcast to peers ONLY — sender already has the local
@@ -539,6 +603,47 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     if (!socket.rooms.has(`chat:${p.roomId}`)) return;
     socket.to(`chat:${p.roomId}`).emit("room.chat.typing.stop", {
       roomId: p.roomId,
+      userId: data.userId,
+      userName: data.username,
+    });
+  });
+
+  /* ----------------------------------------------------------------- */
+  /* Moment reactions — ephemeral bursts (no DB). Broadcast to full    */
+  /* `room:` channel so everyone including the sender receives once.   */
+  /* ----------------------------------------------------------------- */
+
+  socket.on("room.moment.reaction.send", async (p: MomentReactionSendPayload) => {
+    if (
+      typeof p?.roomId !== "string" ||
+      typeof p?.emoji !== "string" ||
+      typeof p?.burstId !== "string"
+    ) {
+      return;
+    }
+    const roomId = p.roomId.trim();
+    const emoji = p.emoji.trim();
+    const burstId = p.burstId.trim();
+    if (!roomId || !emoji || !burstId) return;
+    if (emoji.length > 16 || burstId.length > 96) return;
+    if (!(await userMaySubscribe(data.userId, roomId))) return;
+
+    /**
+     * Always (re)join the Socket.IO room here. The first `room.subscribe`
+     * often races HTTP membership — the socket can miss `room:${roomId}`
+     * and then reaction emits were silently dropped while local optimistic
+     * UI still ran. `join` is idempotent.
+     */
+    socket.join(`room:${roomId}`);
+
+    if (!consumeReactionToken(socket as { data: SocketData })) {
+      return;
+    }
+
+    io.to(`room:${roomId}`).emit("room.moment.reaction", {
+      roomId,
+      emoji,
+      burstId,
       userId: data.userId,
       userName: data.username,
     });
