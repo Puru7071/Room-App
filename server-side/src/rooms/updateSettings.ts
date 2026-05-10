@@ -1,9 +1,8 @@
 /**
  * PATCH /rooms/:roomId/settings
  *
- * Authenticated. Only the room's creator (`Room.createdBy`) may mutate
- * settings; non-owners get 404 (don't leak existence) — defense in
- * depth on top of the client-side gear gating.
+ * Authenticated. Creator + co-owner may mutate settings; others get 404
+ * (don't leak existence) — defense in depth on top of client-side gating.
  *
  * Body (any subset; at least one key required):
  *   {
@@ -18,7 +17,7 @@
  *   200 { ok: true, settings: { ... full RoomSettings ... } }
  *   400 { ok: false, error }   // missing :roomId, empty body, or Zod failure
  *   401 (handled by requireAuth)
- *   404 { ok: false, error }   // room missing or requester is not the creator
+ *   404 { ok: false, error }   // room missing or requester is not elevated
  *   500 { ok: false, error }
  *
  * The settings update + the `lastUsedAt` bump on `Room` happen in one
@@ -27,6 +26,7 @@
 import type { Request, Response } from "express";
 import { prisma } from "../db";
 import { updateSettingsSchema } from "./schemas";
+import { isElevatedRoomModerator } from "./roleAuth";
 
 export async function updateSettingsHandler(req: Request, res: Response) {
   const roomIdParam = req.params.roomId;
@@ -46,11 +46,13 @@ export async function updateSettingsHandler(req: Request, res: Response) {
   try {
     const room = await prisma.room.findUnique({
       where: { roomId },
-      select: { createdBy: true },
+      select: { roomId: true },
     });
-    // Same response for "doesn't exist" and "not the creator" so we don't
-    // leak room existence to non-owners.
-    if (!room || room.createdBy !== userId) {
+    if (!room) {
+      return res.status(404).json({ ok: false, error: "Room not found." });
+    }
+    const canMutate = await isElevatedRoomModerator(userId, roomId);
+    if (!canMutate) {
       return res.status(404).json({ ok: false, error: "Room not found." });
     }
 
@@ -83,3 +85,4 @@ export async function updateSettingsHandler(req: Request, res: Response) {
       .json({ ok: false, error: "Couldn't update settings. Try again." });
   }
 }
+

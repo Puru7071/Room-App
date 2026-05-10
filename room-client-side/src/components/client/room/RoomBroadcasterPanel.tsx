@@ -129,7 +129,7 @@ export function RoomBroadcasterPanel({
       </header>
 
       {/* Body */}
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col px-3 pb-3">
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {visible === null ? (
           <EmptyState isOwner={isOwner} />
         ) : visible.kind === "join" ? (
@@ -152,7 +152,7 @@ export function RoomBroadcasterPanel({
 
 function EmptyState({ isOwner }: { isOwner: boolean }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-1.5 px-6 py-2 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-3 text-center">
       <AppIcon
         icon="lucide:radio-tower"
         className="h-5 w-5 text-muted/70"
@@ -195,10 +195,10 @@ function JoinRequestCard({
   onReject: (id: string) => void;
 }) {
   return (
-    <article className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <article className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-y border-border bg-card/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:border-zinc-800 dark:bg-zinc-900/95">
       <CountdownBar requestId={request.id} expiresAtIso={request.expiresAt} />
 
-      <div className="flex min-h-0 flex-1 items-center gap-3 px-3 pt-3">
+      <div className="flex min-h-0 flex-1 items-center gap-3.5 px-4 pt-3.5">
         <div
           aria-hidden
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-zinc-200 to-zinc-300 text-xs font-semibold tracking-tight text-zinc-700 shadow-sm select-none dark:from-zinc-700 dark:to-zinc-600 dark:text-zinc-100"
@@ -215,11 +215,11 @@ function JoinRequestCard({
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center justify-end gap-2 px-3 pb-2.5">
+      <div className="flex shrink-0 items-center justify-end gap-2 px-4 pb-3">
         <button
           type="button"
           onClick={() => onReject(request.id)}
-          className="inline-flex h-7 cursor-pointer items-center rounded-md border border-border bg-transparent px-2.5 text-xs font-medium text-muted transition hover:bg-muted/10 hover:text-foreground"
+          className="inline-flex h-8 cursor-pointer items-center rounded-lg border border-border bg-transparent px-3 text-xs font-medium text-muted transition hover:bg-muted/10 hover:text-foreground"
           aria-label={`Reject request from ${request.userName}`}
         >
           Reject
@@ -227,7 +227,7 @@ function JoinRequestCard({
         <button
           type="button"
           onClick={() => onApprove(request.id)}
-          className="inline-flex h-7 cursor-pointer items-center rounded-md bg-accent-blue px-2.5 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
+          className="inline-flex h-8 cursor-pointer items-center rounded-lg bg-accent-blue px-3 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
           aria-label={`Accept request from ${request.userName}`}
         >
           Accept
@@ -249,13 +249,13 @@ function VideoAddRequestCard({
   const title = useYouTubeOEmbedTitle(request.videoId);
 
   return (
-    <article className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <article className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-y border-border bg-card/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] dark:border-zinc-800 dark:bg-zinc-900/95">
       <CountdownBar requestId={request.id} expiresAtIso={request.expiresAt} />
 
       {/* Top: thumbnail + title only. The "suggested by" text moved
           into the action row as a badge so the title gets the full
           horizontal width of the right column without crowding. */}
-      <div className="flex min-h-0 flex-1 items-start gap-3 px-3 pt-3">
+      <div className="flex min-h-0 flex-1 items-start gap-3.5 px-4 pt-3.5">
         <div className="relative h-10 w-18 shrink-0 overflow-hidden rounded-md bg-zinc-200 dark:bg-zinc-800">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -282,7 +282,7 @@ function VideoAddRequestCard({
       {/* Action row: [requester badge] left · [Reject][Accept] right.
           The badge replaces the cramped "Suggested by …" sub-line,
           freeing the content area above for a cleaner 2-line title. */}
-      <div className="flex shrink-0 items-center justify-between gap-2 px-2.5 pb-2.5" style={{zoom:0.8}}>
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-3">
         <RequesterBadge
           userName={request.userName}
           createdAtIso={request.createdAt}
@@ -291,7 +291,7 @@ function VideoAddRequestCard({
           <button
             type="button"
             onClick={() => onReject(request.id)}
-            className="inline-flex h-7 cursor-pointer items-center rounded-md border border-border bg-transparent px-2.5 text-xs font-medium text-muted transition hover:bg-muted/10 hover:text-foreground"
+            className="inline-flex h-8 cursor-pointer items-center rounded-lg border border-border bg-transparent px-3 text-xs font-medium text-muted transition hover:bg-muted/10 hover:text-foreground"
             aria-label={`Reject ${request.userName}'s video`}
           >
             Reject
@@ -299,7 +299,7 @@ function VideoAddRequestCard({
           <button
             type="button"
             onClick={() => onApprove(request.id)}
-            className="inline-flex h-7 cursor-pointer items-center rounded-md bg-accent-blue px-2.5 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
+            className="inline-flex h-8 cursor-pointer items-center rounded-lg bg-accent-blue px-3 text-xs font-semibold text-white shadow-sm transition hover:opacity-90"
             aria-label={`Accept ${request.userName}'s video`}
           >
             Accept

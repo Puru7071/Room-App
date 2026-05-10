@@ -24,12 +24,15 @@ import {
   removeRequest,
 } from "./joinRequests";
 import { appendQueueItem } from "../rooms/queue/queueShared";
+import { isElevatedRoomModerator } from "../rooms/roleAuth";
 import type {
   AddRequestApprovePayload,
   AddRequestRejectPayload,
   ChatSendAck,
   ChatSendPayload,
   ChatTypingPayload,
+  MembersSnapshotPayload,
+  MemberLeftPayload,
   MomentReactionSendPayload,
   PlaybackReportPayload,
   PlaybackRequestSnapshotPayload,
@@ -37,6 +40,7 @@ import type {
   PlaybackUpdatePayload,
   RequestApprovePayload,
   RequestRejectPayload,
+  RoomMemberWire,
   RoomSubscribePayload,
   SocketData,
 } from "./types";
@@ -51,7 +55,7 @@ import type {
  * One source of truth for membership shape, used by `room.subscribe`,
  * `room.playback.request-snapshot`, and `room.chat.send`.
  */
-type MembershipKind = "none" | "owner" | "member" | "pending";
+type MembershipKind = "none" | "owner" | "co-owner" | "member" | "pending";
 
 async function classifyMembership(
   userId: string,
@@ -66,7 +70,10 @@ async function classifyMembership(
   const member = await prisma.roomMember.findUnique({
     where: { userId_roomId: { userId, roomId } },
   });
-  if (member && !member.isBanned) return "member";
+  if (member && !member.isBanned) {
+    if (member.status === "SUB_LEADER") return "co-owner";
+    return "member";
+  }
   if (listForRoom(roomId).some((r) => r.userId === userId)) return "pending";
   return "none";
 }
@@ -77,6 +84,42 @@ async function userMaySubscribe(
   roomId: string,
 ): Promise<boolean> {
   return (await classifyMembership(userId, roomId)) !== "none";
+}
+
+async function listRoomMembers(roomId: string): Promise<RoomMemberWire[]> {
+  const room = await prisma.room.findUnique({
+    where: { roomId },
+    select: {
+      roomId: true,
+      createdBy: true,
+      creator: { select: { username: true } },
+      members: {
+        where: { isBanned: false },
+        select: { userId: true, status: true, user: { select: { username: true } } },
+      },
+    },
+  });
+  if (!room) return [];
+
+  const out: RoomMemberWire[] = [
+    {
+      roomId: room.roomId,
+      userId: room.createdBy,
+      userName: room.creator.username,
+      role: "owner",
+    },
+  ];
+
+  for (const member of room.members) {
+    if (member.userId === room.createdBy) continue;
+    out.push({
+      roomId: room.roomId,
+      userId: member.userId,
+      userName: member.user.username,
+      role: member.status === "SUB_LEADER" ? "co-owner" : "member",
+    });
+  }
+  return out;
 }
 
 /** Restrict GIF URLs to Giphy media hosts so chat cannot embed arbitrary URLs. */
@@ -183,13 +226,13 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     }
 
     socket.join(`room:${roomId}`);
-    const isCreator = kind === "owner";
+    const isElevated = kind === "owner" || kind === "co-owner";
     console.log(
-      `[ws] subscribed: userId=${data.userId} roomId=${roomId} isCreator=${isCreator}`,
+      `[ws] subscribed: userId=${data.userId} roomId=${roomId} isElevated=${isElevated}`,
     );
 
     // Leader-only initial state: pending join + video-add requests.
-    if (isCreator) {
+    if (isElevated) {
       const requests = listForRoom(roomId);
       socket.emit("room.request.list", { roomId, requests });
       const addRequests = listAddRequestsForRoom(roomId);
@@ -199,13 +242,19 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     // Active members (owner + non-banned roster) join the chat channel
     // and receive the in-memory history. Pending users intentionally
     // skip — they don't see chat until approved.
-    if (kind === "owner" || kind === "member") {
+    if (kind === "owner" || kind === "co-owner" || kind === "member") {
       socket.join(`chat:${roomId}`);
       socket.emit("room.chat.history", {
         roomId,
         messages: listMessages(roomId),
       });
     }
+
+    const membersPayload: MembersSnapshotPayload = {
+      roomId,
+      members: await listRoomMembers(roomId),
+    };
+    socket.emit("room.members.snapshot", membersPayload);
 
     // Playback snapshot is NO LONGER auto-polled here. The client
     // emits `room.playback.request-snapshot` once its queue is loaded
@@ -244,13 +293,13 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     const found = findRequest(requestId);
     if (!found) return;
 
-    // Verify caller is the room creator. Anyone else trying to approve
-    // is a no-op (could be malicious or a client bug).
+    const canApprove = await isElevatedRoomModerator(data.userId, found.roomId);
+    if (!canApprove) return;
     const room = await prisma.room.findUnique({
       where: { roomId: found.roomId },
       include: { settings: true },
     });
-    if (!room || room.createdBy !== data.userId) return;
+    if (!room) return;
 
     // Insert as a viewer (default member status). Idempotent via upsert.
     try {
@@ -307,8 +356,12 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     // "X joined" toasts.
     io.to(`room:${found.roomId}`).emit("room.member.joined", {
       roomId: found.roomId,
-      userId: found.userId,
-      userName: found.userName,
+      member: {
+        roomId: found.roomId,
+        userId: found.userId,
+        userName: found.userName,
+        role: "member",
+      },
     });
   });
 
@@ -319,11 +372,8 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     const found = findRequest(requestId);
     if (!found) return;
 
-    const room = await prisma.room.findUnique({
-      where: { roomId: found.roomId },
-      select: { createdBy: true },
-    });
-    if (!room || room.createdBy !== data.userId) return;
+    const canReject = await isElevatedRoomModerator(data.userId, found.roomId);
+    if (!canReject) return;
 
     removeRequest(requestId);
 
@@ -362,13 +412,13 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     });
     if (!room) return;
 
-    const isOwner = room.createdBy === data.userId;
+    const isElevated = await isElevatedRoomModerator(data.userId, p.roomId);
     // Authority for driving playback is governed by `editAccess`:
     //   LIMITED → owner-only; ALL → any member (incl. owner).
-    if (room.settings?.editAccess === "LIMITED" && !isOwner) return;
+    if (room.settings?.editAccess === "LIMITED" && !isElevated) return;
     // Either way: verify membership for non-owners. Banned / non-members
     // get a silent drop.
-    if (!isOwner) {
+    if (!isElevated) {
       const member = await prisma.roomMember.findUnique({
         where: { userId_roomId: { userId: data.userId, roomId: p.roomId } },
       });
@@ -430,12 +480,8 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       const found = findAddRequest(requestId);
       if (!found) return;
 
-      // Only the room creator can approve.
-      const room = await prisma.room.findUnique({
-        where: { roomId: found.roomId },
-        select: { createdBy: true },
-      });
-      if (!room || room.createdBy !== data.userId) return;
+      const canApprove = await isElevatedRoomModerator(data.userId, found.roomId);
+      if (!canApprove) return;
 
       // Persist the video into the queue using the shared helper —
       // same transactional position assignment + lastUsedAt bump +
@@ -479,11 +525,8 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
       const found = findAddRequest(requestId);
       if (!found) return;
 
-      const room = await prisma.room.findUnique({
-        where: { roomId: found.roomId },
-        select: { createdBy: true },
-      });
-      if (!room || room.createdBy !== data.userId) return;
+      const canReject = await isElevatedRoomModerator(data.userId, found.roomId);
+      if (!canReject) return;
 
       removeAddRequest(requestId);
 
@@ -543,13 +586,13 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
         include: { settings: true },
       });
       if (!room) return fail("forbidden");
-      const isOwner = room.createdBy === data.userId;
-      if (room.settings?.chatRights === "LIMITED" && !isOwner) {
+      const isElevated = await isElevatedRoomModerator(data.userId, p.roomId);
+      if (room.settings?.chatRights === "LIMITED" && !isElevated) {
         return fail("forbidden");
       }
 
       // Active-member check (no pending users sending chat).
-      if (!isOwner) {
+      if (!isElevated) {
         const member = await prisma.roomMember.findUnique({
           where: {
             userId_roomId: { userId: data.userId, roomId: p.roomId },
@@ -655,6 +698,14 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
   // suspenders, not load-bearing.
   socket.on("disconnect", () => {
     for (const room of socket.rooms) {
+      if (room.startsWith("room:")) {
+        const roomId = room.slice("room:".length);
+        const payload: MemberLeftPayload = {
+          roomId,
+          userId: data.userId,
+        };
+        socket.to(room).emit("room.member.left", payload);
+      }
       if (room.startsWith("chat:")) {
         const roomId = room.slice("chat:".length);
         socket.to(room).emit("room.chat.typing.stop", {

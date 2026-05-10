@@ -33,6 +33,7 @@ import { prisma } from "../../db";
 import { getIo } from "../../ws";
 import { addAddRequest } from "../../ws/addRequests";
 import { appendQueueItem } from "./queueShared";
+import { isElevatedRoomModerator } from "../roleAuth";
 
 const addToQueueSchema = z.object({
   videoId: z
@@ -68,8 +69,8 @@ export async function addToQueueHandler(req: Request, res: Response) {
       return res.status(404).json({ ok: false, error: "Room not found." });
     }
 
-    const isOwner = room.createdBy === userId;
-    if (!isOwner) {
+    const isElevated = await isElevatedRoomModerator(userId, roomId);
+    if (!isElevated) {
       const member = await prisma.roomMember.findUnique({
         where: { userId_roomId: { userId, roomId } },
       });
@@ -81,7 +82,7 @@ export async function addToQueueHandler(req: Request, res: Response) {
     }
 
     // LIMITED edit-access + non-owner → request flow.
-    if (room.settings?.editAccess === "LIMITED" && !isOwner) {
+    if (room.settings?.editAccess === "LIMITED" && !isElevated) {
       const reqRow = addAddRequest(roomId, { userId, userName }, videoId);
       getIo()
         ?.to(`user:${room.createdBy}`)
@@ -93,7 +94,7 @@ export async function addToQueueHandler(req: Request, res: Response) {
       });
     }
 
-    // Direct add (owner, or `editAccess === "ALL"`).
+    // Direct add (elevated, or `editAccess === "ALL"`).
     const wireItem = await appendQueueItem({
       roomId,
       videoId,

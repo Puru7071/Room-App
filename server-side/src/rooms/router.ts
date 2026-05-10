@@ -18,6 +18,7 @@ import { joinRoomHandler } from "./joinRoom";
 import { myRoomsHandler } from "./myRooms";
 import { addToQueueHandler } from "./queue/addToQueue";
 import { getQueueHandler } from "./queue/getQueue";
+import { updateMemberRoleHandler } from "./updateMemberRole";
 import { updateSettingsHandler } from "./updateSettings";
 
 const createRoomLimiter = rateLimit({
@@ -100,6 +101,14 @@ const addToQueueLimiter = rateLimit({
   message: { ok: false, error: "Too many queue additions. Try again shortly." },
 });
 
+const updateMemberRoleLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many role changes. Try again shortly." },
+});
+
 export const roomsRouter = Router();
 
 roomsRouter.post(
@@ -121,6 +130,13 @@ roomsRouter.patch(
   updateSettingsLimiter,
   requireAuth,
   updateSettingsHandler,
+);
+
+roomsRouter.patch(
+  "/:roomId/members/:userId/role",
+  updateMemberRoleLimiter,
+  requireAuth,
+  updateMemberRoleHandler,
 );
 
 roomsRouter.delete(

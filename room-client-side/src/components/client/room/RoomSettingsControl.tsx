@@ -23,7 +23,7 @@ type RoomSettingsControlProps = {
 /**
  * Circular gear button + popover panel of room settings. Visibility of
  * this whole component is gated upstream (rendered only when the
- * requester is the room creator), so all four rows assume edit
+ * requester is the room creator), so all visible rows assume edit
  * permission and fire PATCH on toggle.
  *
  * Each toggle uses an optimistic update — flips the row immediately,
@@ -104,16 +104,6 @@ export function RoomSettingsControl({
     void applyPatch({ videoAudioRights: next.videoAudioRights }, prev);
   }
 
-  function toggleEditAccess(nextOn: boolean) {
-    const prev = settings;
-    const next: RoomSettingsDetail = {
-      ...settings,
-      editAccess: nextOn ? "LIMITED" : "ALL",
-    };
-    onUpdated(next);
-    void applyPatch({ editAccess: next.editAccess }, prev);
-  }
-
   return (
     <div ref={wrapperRef} className="relative">
       <button
@@ -159,12 +149,6 @@ export function RoomSettingsControl({
               hint="Only leaders can speak / share video"
               on={settings.videoAudioRights === "LIMITED"}
               onChange={toggleVideoAudioRights}
-            />
-            <LabeledToggle
-              label="Restricted edit access"
-              hint="Only leaders can change settings"
-              on={settings.editAccess === "LIMITED"}
-              onChange={toggleEditAccess}
             />
           </div>
         </div>

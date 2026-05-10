@@ -11,6 +11,8 @@ type HomeHeaderActionsProps = {
   beforePrivateToggle?: ReactNode;
   /** Rendered to the left of the theme switcher (e.g. room private toggle). */
   beforeTheme?: ReactNode;
+  /** Rendered immediately before the theme button (e.g. room member facepile). */
+  beforeThemeToggle?: ReactNode;
   /** Rendered to the right of the theme switcher, before logout/avatar
    *  (e.g. room settings gear). */
   afterTheme?: ReactNode;
@@ -24,6 +26,7 @@ type HomeHeaderActionsProps = {
 export function HomeHeaderActions({
   beforePrivateToggle,
   beforeTheme,
+  beforeThemeToggle,
   afterTheme,
   showLogout,
 }: HomeHeaderActionsProps) {
@@ -38,6 +41,7 @@ export function HomeHeaderActions({
     <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
       {beforePrivateToggle}
       {beforeTheme}
+      {beforeThemeToggle}
       <button
         type="button"
         tabIndex={-1}

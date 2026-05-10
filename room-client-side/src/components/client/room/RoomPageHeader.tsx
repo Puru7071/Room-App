@@ -4,10 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback } from "react";
 import { HomeHeaderActions } from "@/components/client/home/HomeHeaderActions";
-import type { RoomMemberRow } from "@/lib/room-types";
 import type { RoomSettingsDetail } from "@/lib/api";
 import type { YouTubeSearchResult } from "@/lib/youtube-api";
-import { RoomMemberFacepile } from "./RoomMemberFacepile";
+import { RoomHeaderMemberRoster } from "./RoomHeaderMemberRoster";
 import { RoomPrivateToggle } from "./RoomPrivateToggle";
 import { RoomSettingsControl } from "./RoomSettingsControl";
 import { RoomShareButton } from "./RoomShareButton";
@@ -34,8 +33,6 @@ type RoomPageHeaderProps = {
   onSearchPick: (result: YouTubeSearchResult) => void;
   /** When set, owner-only private/public switch (left of theme control). */
   roomPrivateToggle?: RoomPrivateToggleConfig;
-  /** Live roster for the member facepile (left of private toggle). */
-  roomMembers?: RoomMemberRow[];
   /** When true (requesting user equals `Room.createdBy`), shows the
    *  settings gear in the right cluster. */
   isOwner?: boolean;
@@ -46,6 +43,8 @@ type RoomPageHeaderProps = {
    *  updates a setting. Wires the parent's `setSettings` so the panel
    *  reflects the latest server-truth. */
   onSettingsUpdated?: (next: RoomSettingsDetail) => void;
+  /** Omitted from overlapping header chips; popover still lists everyone. */
+  currentUserId?: string | null;
 };
 
 export function RoomPageHeader({
@@ -55,10 +54,10 @@ export function RoomPageHeader({
   onAddVideo,
   onSearchPick,
   roomPrivateToggle,
-  roomMembers = [],
   isOwner,
   settings,
   onSettingsUpdated,
+  currentUserId = null,
 }: RoomPageHeaderProps) {
   const handleAddVideo = useCallback(() => {
     onAddVideo();
@@ -156,7 +155,6 @@ export function RoomPageHeader({
         <div className="flex shrink-0 items-center justify-end lg:w-[min(100%,402px)]">
           <HomeHeaderActions
             showLogout
-            beforePrivateToggle={<RoomMemberFacepile members={roomMembers} />}
             beforeTheme={
               roomPrivateToggle ? (
                 <RoomPrivateToggle
@@ -165,6 +163,13 @@ export function RoomPageHeader({
                   onCheckedChange={roomPrivateToggle.onChange}
                 />
               ) : undefined
+            }
+            beforeThemeToggle={
+              <RoomHeaderMemberRoster
+                roomId={roomId}
+                isOwner={isOwner}
+                currentUserId={currentUserId}
+              />
             }
             afterTheme={
               <>

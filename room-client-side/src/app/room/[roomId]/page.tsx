@@ -53,6 +53,11 @@ import type {
 } from "@/lib/ws-events";
 import { getSocket } from "@/lib/ws-client";
 import { DEFAULT_ROOM_YOUTUBE_VIDEO_ID } from "@/lib/app-constants";
+import {
+  CO_OWNER_ROLE,
+  MEMBER_ROLE,
+  OWNER_ADMIN_ROLE,
+} from "@/lib/room-types";
 import { extractYouTubeVideoId } from "@/lib/youtube";
 import type { YouTubeSearchResult } from "@/lib/youtube-api";
 
@@ -68,6 +73,22 @@ import type { YouTubeSearchResult } from "@/lib/youtube-api";
 type JoinStatus = "joining" | "joined" | "pending" | "rejected";
 
 export default function RoomPage() {
+  const toMemberRow = useCallback(
+    (
+      member: { userId: string; userName: string; role: "owner" | "co-owner" | "member" },
+    ) => ({
+      userId: member.userId,
+      userName: member.userName,
+      role:
+        member.role === "owner"
+          ? OWNER_ADMIN_ROLE
+          : member.role === "co-owner"
+            ? CO_OWNER_ROLE
+            : MEMBER_ROLE,
+    }),
+    [],
+  );
+
   const params = useParams<{ roomId: string }>();
   /** Single canonical id — matches server + WS payloads (encoding-safe). */
   const roomId = normalizeRoomId(params.roomId);
@@ -185,14 +206,19 @@ export default function RoomPage() {
   }, [roomId, joinStatus]);
 
   const isOwner = Boolean(user && room && room.createdBy === user.userId);
+  const myMemberRole = useRoomStore(roomId, (s) =>
+    user ? (s.members.find((m) => m.userId === user.userId)?.role ?? null) : null,
+  );
+  const isCoOwner = myMemberRole === CO_OWNER_ROLE;
+  const isElevated = isOwner || isCoOwner;
   // Authority is governed by `editAccess`, NOT `nature`:
   //   ALL     → everyone can pause/play/scrub/jump and add directly.
   //   LIMITED → only the owner can; non-owners' top-bar adds become
   //             video-add requests (handled server-side in addToQueue).
   // `nature` only governs join admission, not playback authority.
-  const canControlPlayback = isOwner || settings?.editAccess === "ALL";
+  const canControlPlayback = isElevated || settings?.editAccess === "ALL";
   // Chat send authority. `chatRights: LIMITED` → owner-only chat.
-  const canSendChat = isOwner || settings?.chatRights === "ALL";
+  const canSendChat = isElevated || settings?.chatRights === "ALL";
 
   /* --------------- playback sync state (refs only) --------------- */
 
@@ -297,8 +323,41 @@ export default function RoomPage() {
         router.replace("/");
       }
     },
-    onMemberJoined: () => {
-      // Future: small "X joined" toast. Not in v1.
+    onMembersSnapshot: ({ members }) => {
+      getRoomStore(roomId)
+        .getState()
+        .setMembers(members.map((m) => toMemberRow(m)));
+    },
+    onMemberJoined: (payload) => {
+      // Back-compat: some sockets may still deliver legacy shape
+      // `{ roomId, userId, userName }` during rolling restarts.
+      const member =
+        "member" in payload && payload.member
+          ? payload.member
+          : ({
+              roomId: payload.roomId,
+              userId: (payload as { userId?: string }).userId ?? "",
+              userName: (payload as { userName?: string }).userName ?? "",
+              role: "member" as const,
+            });
+      if (!member.userId || !member.userName) return;
+      getRoomStore(roomId).getState().upsertMember(toMemberRow(member));
+    },
+    onMemberLeft: ({ userId }) => {
+      getRoomStore(roomId).getState().removeMember(userId);
+    },
+    onMemberRoleUpdated: ({ userId, role }) => {
+      const current = getRoomStore(roomId)
+        .getState()
+        .members.find((m) => m.userId === userId);
+      if (!current) return;
+      getRoomStore(roomId).getState().upsertMember(
+        toMemberRow({
+          userId: current.userId,
+          userName: current.userName,
+          role,
+        }),
+      );
     },
     onQueueAdded: ({ item }) => {
       // The server broadcasts this for every successful add — both
@@ -550,7 +609,7 @@ export default function RoomPage() {
   }, [room?.name]);
 
   const handleLoopToggle = useCallback(async () => {
-    if (!isOwner || !settings) return;
+    if (!isElevated || !settings) return;
     const prev = settings;
     const next: RoomSettingsDetail = { ...settings, loop: !settings.loop };
     setSettings(next);
@@ -561,7 +620,7 @@ export default function RoomPage() {
       return;
     }
     setSettings(result.settings);
-  }, [isOwner, settings, roomId]);
+  }, [isElevated, settings, roomId]);
 
   const playlist = useMemo(
     () => roomCombinedQueue({ past, nowPlaying, cues }),
@@ -939,10 +998,10 @@ export default function RoomPage() {
           }
           onAddVideo={handleAddVideo}
           onSearchPick={handleSearchPick}
-          roomMembers={[]}
-          isOwner={isOwner}
+          isOwner={isElevated}
           settings={settings}
           onSettingsUpdated={setSettings}
+          currentUserId={user?.userId ?? null}
         />
 
         <main className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1011,7 +1070,7 @@ export default function RoomPage() {
                 phase={phase}
                 onJump={handleQueueJump}
                 loop={settings?.loop ?? false}
-                canEdit={isOwner}
+                canEdit={isElevated}
                 canControlPlayback={canControlPlayback}
                 onLoopToggle={handleLoopToggle}
                 queueLoading={queueLoading}
@@ -1026,7 +1085,7 @@ export default function RoomPage() {
             bottomPanel={
               <RoomBroadcasterPanel
                 roomId={roomId}
-                isOwner={isOwner}
+                isOwner={isElevated}
                 onApproveJoin={handleApproveJoin}
                 onRejectJoin={handleRejectJoin}
                 onApproveAdd={handleApproveAdd}

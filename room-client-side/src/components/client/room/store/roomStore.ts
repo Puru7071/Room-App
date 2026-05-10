@@ -10,6 +10,7 @@ import type {
   VideoAddRequestWire,
 } from "@/lib/ws-events";
 import type { RoomQueueEntry } from "@/lib/room-types";
+import type { RoomMemberRow } from "@/lib/room-types";
 
 export type LocalChatMessage = ChatMessageWire & {
   status: "pending" | "delivered";
@@ -24,6 +25,7 @@ type RoomState = {
   videoUrl: string;
   joinRequests: JoinRequestWire[];
   addRequests: VideoAddRequestWire[];
+  members: RoomMemberRow[];
   chatMessages: LocalChatMessage[];
   chatUnreadCount: number;
   chatFirstUnreadIndex: number;
@@ -42,6 +44,9 @@ type RoomStore = RoomState & {
   setAddRequests: (requests: VideoAddRequestWire[]) => void;
   upsertAddRequest: (request: VideoAddRequestWire) => void;
   removeAddRequest: (requestId: string) => void;
+  setMembers: (members: RoomMemberRow[]) => void;
+  upsertMember: (member: RoomMemberRow) => void;
+  removeMember: (userId: string) => void;
   setChatHistory: (messages: ChatMessageWire[]) => void;
   appendChatMessage: (message: ChatMessageWire) => void;
   addOptimisticChatMessage: (message: LocalChatMessage) => void;
@@ -61,6 +66,7 @@ const initialState: RoomState = {
   videoUrl: "",
   joinRequests: [],
   addRequests: [],
+  members: [],
   chatMessages: [],
   chatUnreadCount: 0,
   chatFirstUnreadIndex: -1,
@@ -154,6 +160,29 @@ function createRoomStore(): StoreApi<RoomStore> {
       set((state) => ({
         addRequests: state.addRequests.filter((r) => r.id !== requestId),
       })),
+    setMembers: (members) => set({ members }),
+    upsertMember: (member) =>
+      set((state) => {
+        const idx = state.members.findIndex((m) => m.userId === member.userId);
+        if (idx < 0) return { members: [...state.members, member] };
+        const current = state.members[idx];
+        if (
+          current.userName === member.userName &&
+          current.role === member.role
+        ) {
+          return {};
+        }
+        const next = [...state.members];
+        next[idx] = member;
+        return { members: next };
+      }),
+    removeMember: (userId) =>
+      set((state) => {
+        if (!state.members.some((m) => m.userId === userId)) return {};
+        return {
+          members: state.members.filter((m) => m.userId !== userId),
+        };
+      }),
     setChatHistory: (messages) =>
       set({
         chatMessages: messages.map((message) => ({

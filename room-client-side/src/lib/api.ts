@@ -298,6 +298,20 @@ export function updateRoomSettings(
   );
 }
 
+export type RoomMemberRoleMutation = "VIEWER" | "SUB_LEADER";
+export type UpdateRoomMemberRoleResult = { role: "member" | "co-owner" };
+
+export function updateRoomMemberRole(
+  roomId: string,
+  userId: string,
+  role: RoomMemberRoleMutation,
+) {
+  return patchJsonAuth<UpdateRoomMemberRoleResult>(
+    `/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(userId)}/role`,
+    { role },
+  );
+}
+
 /**
  * DELETE twin of `postJsonAuth`. Same auth + 401-clears-token pattern.
  * Body-less; the server reads everything from the URL + JWT.

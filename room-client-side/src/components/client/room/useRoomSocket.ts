@@ -14,6 +14,9 @@ import type {
   ChatMessagePayload,
   ChatMessageWire,
   ChatTypingBroadcastPayload,
+  MemberLeftPayload,
+  MembersSnapshotPayload,
+  MemberRoleUpdatedPayload,
   MomentReactionBroadcastPayload,
   JoinRequestWire,
   MemberJoinedPayload,
@@ -49,6 +52,12 @@ type Handlers = {
   onRequestRejected?: (requestId: string) => void;
   /** Anyone (incl. self) joined the room channel. */
   onMemberJoined?: (member: MemberJoinedPayload) => void;
+  /** Full roster snapshot sent after subscribe. */
+  onMembersSnapshot?: (payload: MembersSnapshotPayload) => void;
+  /** A user left/disconnected from the room channel. */
+  onMemberLeft?: (payload: MemberLeftPayload) => void;
+  /** A room member changed role (member <-> co-owner). */
+  onMemberRoleUpdated?: (payload: MemberRoleUpdatedPayload) => void;
   /**
    * A new queue item was persisted on the server and is being
    * broadcast to all room members (including the sender). The
@@ -157,6 +166,18 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       if (p.roomId !== roomId) return;
       handlersRef.current.onMemberJoined?.(p);
     };
+    const onMembersSnapshot = (p: MembersSnapshotPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onMembersSnapshot?.(p);
+    };
+    const onMemberLeft = (p: MemberLeftPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onMemberLeft?.(p);
+    };
+    const onMemberRoleUpdated = (p: MemberRoleUpdatedPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onMemberRoleUpdated?.(p);
+    };
     const onQueueAdded = (p: QueueAddedPayload) => {
       if (p.roomId !== roomId) return;
       handlersRef.current.onQueueAdded?.(p);
@@ -221,6 +242,9 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
     socket.on("room.request.approved", onApproved);
     socket.on("room.request.rejected", onRejected);
     socket.on("room.member.joined", onJoined);
+    socket.on("room.members.snapshot", onMembersSnapshot);
+    socket.on("room.member.left", onMemberLeft);
+    socket.on("room.member.role-updated", onMemberRoleUpdated);
     socket.on("room.queue.added", onQueueAdded);
     socket.on("room.playback.sync", onPlaybackSync);
     socket.on("room.playback.poll-state", onPlaybackPollState);
@@ -250,6 +274,9 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       socket.off("room.request.approved", onApproved);
       socket.off("room.request.rejected", onRejected);
       socket.off("room.member.joined", onJoined);
+      socket.off("room.members.snapshot", onMembersSnapshot);
+      socket.off("room.member.left", onMemberLeft);
+      socket.off("room.member.role-updated", onMemberRoleUpdated);
       socket.off("room.queue.added", onQueueAdded);
       socket.off("room.playback.sync", onPlaybackSync);
       socket.off("room.playback.poll-state", onPlaybackPollState);

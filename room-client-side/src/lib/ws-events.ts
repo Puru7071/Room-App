@@ -40,10 +40,34 @@ export type RequestRejectedPayload = { requestId: string; roomId: string };
  */
 export type RequestRemovedPayload = { requestId: string; roomId: string };
 
-export type MemberJoinedPayload = {
+export type RoomMemberRoleWire = "owner" | "co-owner" | "member";
+
+export type RoomMemberWire = {
   roomId: string;
   userId: string;
   userName: string;
+  role: RoomMemberRoleWire;
+};
+
+export type MembersSnapshotPayload = {
+  roomId: string;
+  members: RoomMemberWire[];
+};
+
+export type MemberJoinedPayload = {
+  roomId: string;
+  member: RoomMemberWire;
+};
+
+export type MemberLeftPayload = {
+  roomId: string;
+  userId: string;
+};
+
+export type MemberRoleUpdatedPayload = {
+  roomId: string;
+  userId: string;
+  role: RoomMemberRoleWire;
 };
 
 /**
