@@ -312,6 +312,19 @@ export function updateRoomMemberRole(
   );
 }
 
+export type LeaveRoomResult = {
+  /** True when the user is the room creator — server did not delete a row. */
+  leader?: boolean;
+  removed?: boolean;
+};
+
+export function leaveRoom(roomId: string) {
+  return postJsonAuth<LeaveRoomResult>(
+    `/rooms/${encodeURIComponent(roomId)}/leave`,
+    {},
+  );
+}
+
 /**
  * DELETE twin of `postJsonAuth`. Same auth + 401-clears-token pattern.
  * Body-less; the server reads everything from the URL + JWT.
@@ -356,6 +369,13 @@ async function deleteJsonAuth<T>(path: string): Promise<ApiResult<T>> {
   }
 
   return data as ApiResult<T>;
+}
+
+/** Kick/remove another member (moderators only; server enforces rules). */
+export function kickRoomMember(roomId: string, userId: string) {
+  return deleteJsonAuth<Record<string, never>>(
+    `/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(userId)}`,
+  );
 }
 
 export type MyRoom = {

@@ -12,6 +12,7 @@
  *   room.request.reject  — client-emitted by leader, reject a request
  *   room.request.rejected — server-emitted to requester
  *   room.member.joined   — server-emitted to room channel on any join
+ *   room.kill            — client-emitted by room creator; deletes room + `room.killed`
  */
 
 /**
@@ -47,6 +48,8 @@ export type JoinRequestWire = {
 
 // Client → server payloads
 export type RoomSubscribePayload = { roomId: string };
+/** Room creator only — deletes the room and broadcasts `room.killed`. */
+export type RoomKillPayload = { roomId: string };
 export type RequestApprovePayload = { requestId: string };
 export type RequestRejectPayload = { requestId: string };
 
@@ -100,6 +103,19 @@ export type MemberRoleUpdatedPayload = {
 };
 
 /**
+ * Broadcast on `room:${roomId}` so everyone still in the channel receives it;
+ * clients ignore unless `targetUserId` matches self. Includes actor role for UI copy.
+ */
+export type MemberKickedPayload = {
+  roomId: string;
+  targetUserId: string;
+  removedByRole: "owner" | "co-owner";
+};
+
+/** Broadcast on `room:` when the creator deletes / kills the room. */
+export type RoomKilledPayload = { roomId: string };
+
+/**
  * Wire shape of a single queue item — mirrors what `GET /rooms/:id/queue`
  * returns. Strings only (incl. ISO timestamps) so it serializes cleanly
  * over WS frames.
@@ -119,6 +135,13 @@ export type QueueItemWire = {
  * single source of truth, no client-side optimism.
  */
 export type QueueAddedPayload = { roomId: string; item: QueueItemWire };
+
+/** Broadcast when room settings change (nature/loop/access rights). */
+export type RoomSettingsUpdatedPayload = {
+  roomId: string;
+  settings: RoomSettingsWire;
+  updatedBy: string;
+};
 
 /* ------------------------------------------------------------------ */
 /* Video-add requests (broadcast carousel — companion to JoinRequest)  */

@@ -6,13 +6,17 @@ import { RoomMemberFacepile } from "@/components/client/room/RoomMemberFacepile"
 
 type RoomHeaderMemberRosterProps = {
   roomId: string;
-  isOwner?: boolean;
+  /** Owner or co-owner — can promote members. */
+  isElevated?: boolean;
+  /** Room creator only — can demote co-owners. */
+  isRoomCreator?: boolean;
   currentUserId?: string | null;
 };
 
 function RoomHeaderMemberRosterInner({
   roomId,
-  isOwner = false,
+  isElevated = false,
+  isRoomCreator = false,
   currentUserId = null,
 }: RoomHeaderMemberRosterProps) {
   const members = useRoomStore(roomId, (s) => s.members);
@@ -21,7 +25,8 @@ function RoomHeaderMemberRosterInner({
     <RoomMemberFacepile
       roomId={roomId}
       members={stableMembers}
-      isOwner={isOwner}
+      isElevated={isElevated}
+      isRoomCreator={isRoomCreator}
       currentUserId={currentUserId}
     />
   );

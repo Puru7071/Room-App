@@ -70,6 +70,16 @@ export type MemberRoleUpdatedPayload = {
   role: RoomMemberRoleWire;
 };
 
+/** Broadcast on `room:` — only the matching `targetUserId` should act. */
+export type MemberKickedPayload = {
+  roomId: string;
+  targetUserId: string;
+  removedByRole: "owner" | "co-owner";
+};
+
+/** Broadcast when the room owner deletes the room — all clients go home. */
+export type RoomKilledPayload = { roomId: string };
+
 /**
  * Broadcast on the `room:` channel after a successful queue add. The
  * sender receives this too — single source of truth for "append this
@@ -85,6 +95,19 @@ export type QueueAddedPayload = {
     addedAt: string;
     position: number;
   };
+};
+
+/** Broadcast when room settings change (nature/loop/access rights). */
+export type RoomSettingsUpdatedPayload = {
+  roomId: string;
+  settings: {
+    nature: "PUBLIC" | "PRIVATE";
+    loop: boolean;
+    editAccess: "ALL" | "LIMITED";
+    chatRights: "ALL" | "LIMITED";
+    videoAudioRights: "ALL" | "LIMITED";
+  };
+  updatedBy: string;
 };
 
 /* ------------------------------------------------------------------ */

@@ -20,6 +20,8 @@ import type {
   MomentReactionBroadcastPayload,
   JoinRequestWire,
   MemberJoinedPayload,
+  MemberKickedPayload,
+  RoomKilledPayload,
   PlaybackPollPayload,
   PlaybackSyncPayload,
   QueueAddedPayload,
@@ -29,6 +31,7 @@ import type {
   RequestListPayload,
   RequestRejectedPayload,
   RequestRemovedPayload,
+  RoomSettingsUpdatedPayload,
   VideoAddRequestWire,
 } from "@/lib/ws-events";
 
@@ -58,6 +61,12 @@ type Handlers = {
   onMemberLeft?: (payload: MemberLeftPayload) => void;
   /** A room member changed role (member <-> co-owner). */
   onMemberRoleUpdated?: (payload: MemberRoleUpdatedPayload) => void;
+  /** Room settings changed (loop/access/private) in any member's tab. */
+  onRoomSettingsUpdated?: (payload: RoomSettingsUpdatedPayload) => void;
+  /** You were removed from the room (broadcast on `room:`). */
+  onMemberKicked?: (payload: MemberKickedPayload) => void;
+  /** Room was deleted by the owner — everyone leaves for home. */
+  onRoomKilled?: (payload: RoomKilledPayload) => void;
   /**
    * A new queue item was persisted on the server and is being
    * broadcast to all room members (including the sender). The
@@ -178,6 +187,18 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       if (p.roomId !== roomId) return;
       handlersRef.current.onMemberRoleUpdated?.(p);
     };
+    const onRoomSettingsUpdated = (p: RoomSettingsUpdatedPayload) => {
+      if (p.roomId !== roomId) return;
+      handlersRef.current.onRoomSettingsUpdated?.(p);
+    };
+    const onMemberKicked = (p: MemberKickedPayload) => {
+      if (normalizeRoomId(p.roomId) !== normalizeRoomId(roomId)) return;
+      handlersRef.current.onMemberKicked?.(p);
+    };
+    const onRoomKilled = (p: RoomKilledPayload) => {
+      if (normalizeRoomId(p.roomId) !== normalizeRoomId(roomId)) return;
+      handlersRef.current.onRoomKilled?.(p);
+    };
     const onQueueAdded = (p: QueueAddedPayload) => {
       if (p.roomId !== roomId) return;
       handlersRef.current.onQueueAdded?.(p);
@@ -245,6 +266,9 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
     socket.on("room.members.snapshot", onMembersSnapshot);
     socket.on("room.member.left", onMemberLeft);
     socket.on("room.member.role-updated", onMemberRoleUpdated);
+    socket.on("room.settings.updated", onRoomSettingsUpdated);
+    socket.on("room.member.kicked", onMemberKicked);
+    socket.on("room.killed", onRoomKilled);
     socket.on("room.queue.added", onQueueAdded);
     socket.on("room.playback.sync", onPlaybackSync);
     socket.on("room.playback.poll-state", onPlaybackPollState);
@@ -277,6 +301,9 @@ export function useRoomSocket(roomId: string, handlers: Handlers) {
       socket.off("room.members.snapshot", onMembersSnapshot);
       socket.off("room.member.left", onMemberLeft);
       socket.off("room.member.role-updated", onMemberRoleUpdated);
+      socket.off("room.settings.updated", onRoomSettingsUpdated);
+      socket.off("room.member.kicked", onMemberKicked);
+      socket.off("room.killed", onRoomKilled);
       socket.off("room.queue.added", onQueueAdded);
       socket.off("room.playback.sync", onPlaybackSync);
       socket.off("room.playback.poll-state", onPlaybackPollState);

@@ -107,6 +107,11 @@ export function findAddRequest(requestId: string): {
   return null;
 }
 
+/** Drop all pending video-add requests for a room (e.g. room killed). */
+export function clearAddRequestsForRoom(roomId: string) {
+  requestsByRoom.delete(roomId);
+}
+
 export function removeAddRequest(requestId: string): {
   roomId: string;
   userId: string;

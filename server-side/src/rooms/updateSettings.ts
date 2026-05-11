@@ -25,6 +25,7 @@
  */
 import type { Request, Response } from "express";
 import { prisma } from "../db";
+import { getIo } from "../ws";
 import { updateSettingsSchema } from "./schemas";
 import { isElevatedRoomModerator } from "./roleAuth";
 
@@ -68,8 +69,8 @@ export async function updateSettingsHandler(req: Request, res: Response) {
       return updated;
     });
 
-    return res.status(200).json({
-      ok: true,
+    const payload = {
+      roomId,
       settings: {
         nature: settings.nature,
         loop: settings.loop,
@@ -77,6 +78,13 @@ export async function updateSettingsHandler(req: Request, res: Response) {
         chatRights: settings.chatRights,
         videoAudioRights: settings.videoAudioRights,
       },
+      updatedBy: userId,
+    };
+    getIo()?.to(`room:${roomId}`).emit("room.settings.updated", payload);
+
+    return res.status(200).json({
+      ok: true,
+      settings: payload.settings,
     });
   } catch (err) {
     console.error("[rooms/update-settings] failed:", err);

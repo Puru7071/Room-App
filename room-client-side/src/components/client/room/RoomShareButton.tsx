@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import { HEADER_CLUSTER_CIRCLE_LAYOUT } from "@/components/client/home/headerClusterStyles";
 import { AppIcon } from "@/components/icons/AppIcon";
 
 type RoomShareButtonProps = {
@@ -60,7 +61,7 @@ export function RoomShareButton({ roomId }: RoomShareButtonProps) {
         aria-label="Copy room ID"
         title="Copy room ID"
         className={[
-          "inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border shadow-sm transition-colors duration-200 sm:h-10 sm:w-10",
+          `${HEADER_CLUSTER_CIRCLE_LAYOUT} cursor-pointer border shadow-sm transition-colors duration-200`,
           copied
             ? "border-emerald-500 bg-emerald-500 text-white"
             : "border-border bg-card/90 text-muted hover:border-border hover:bg-card",

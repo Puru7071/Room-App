@@ -44,10 +44,11 @@ type RoomYouTubePlayerProps = {
   currentIndex: number;
   onAdvance: (absoluteIndex: number) => void;
   /**
-   * When `false`, the iframe hides native controls + disables keyboard
-   * shortcuts, and an absolute click-blocker overlay covers it. Used
-   * for non-leader members in private rooms (spectator mode). Default
-   * true.
+   * When `false`, a click-blocker overlay covers the player and the
+   * iframe is non-interactive for pointer events. Embed `playerVars`
+   * stay **stable** across toggles so `react-youtube` does not remount
+   * the iframe (e.g. member → co-owner would otherwise rerun `onReady`
+   * and `loadPlaylist(..., 0)`, restarting the video).
    */
   interactive?: boolean;
   /**
@@ -267,6 +268,11 @@ export const RoomYouTubePlayer = forwardRef<
 
   const sessionFirstVideoId = sessionSnapshotRef.current?.firstVideoId ?? "";
 
+  /**
+   * Intentionally **not** keyed on `interactive`. Varying opts remounts
+   * the iframe and replays bootstrap (`loadPlaylist(..., 0)`), which
+   * resets the watch position when someone gains co-owner mid-session.
+   */
   const playerOpts = useMemo(
     () => ({
       height: "100%",
@@ -278,13 +284,9 @@ export const RoomYouTubePlayer = forwardRef<
         modestbranding: 1,
         playsinline: 1,
         enablejsapi: 1,
-        // Hide native controls + kill keyboard shortcuts when the user
-        // doesn't have control authority. The click-blocker overlay
-        // below catches any clicks that would have reached the iframe.
-        ...(interactive ? {} : { controls: 0, disablekb: 1 }),
       },
     }),
-    [interactive],
+    [],
   );
 
   /** Reconcile React's desired playlist/index into the live player. */
@@ -436,7 +438,12 @@ export const RoomYouTubePlayer = forwardRef<
   if (!sessionFirstVideoId) return null;
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-sm [&>div]:h-full [&>div]:w-full">
+    <div
+      className={
+        "relative aspect-video w-full overflow-hidden rounded-xl border border-border bg-black shadow-sm [&>div]:h-full [&>div]:w-full" +
+        (!interactive ? " [&_iframe]:pointer-events-none" : "")
+      }
+    >
       <YouTube
         videoId={sessionFirstVideoId}
         title="Now playing"

@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { useParams } from "next/navigation";
 import { useAuthToken } from "@/components/client/auth/useAuthToken";
+import { decodeJwtPayload, getAuthToken } from "@/lib/auth-storage";
 import { AmbientPageBackground } from "@/components/layout/AmbientPageBackground";
 import { RoomAmbientBackdrop } from "@/components/client/room/RoomAmbientBackdrop";
 import { MomentReactionOverlay } from "@/components/client/room/MomentReactionOverlay";
@@ -43,6 +44,7 @@ import {
   getRoom,
   getRoomQueue,
   joinRoom,
+  leaveRoom,
   updateRoomSettings,
   type RoomDetail,
   type RoomSettingsDetail,
@@ -123,6 +125,13 @@ export default function RoomPage() {
       clearRoomStore(roomId);
     };
   }, [roomId]);
+
+  // Keep the tiny loop-toggle slice in Zustand synced from server-truth
+  // settings so only the loop button needs to subscribe.
+  useEffect(() => {
+    if (!settings) return;
+    getRoomStore(roomId).getState().setLoopEnabled(settings.loop);
+  }, [roomId, settings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -346,11 +355,36 @@ export default function RoomPage() {
     onMemberLeft: ({ userId }) => {
       getRoomStore(roomId).getState().removeMember(userId);
     },
+    onMemberKicked: (p) => {
+      const me =
+        user?.userId ??
+        (() => {
+          const t = getAuthToken();
+          return t ? decodeJwtPayload(t)?.userId : undefined;
+        })();
+      if (!me || p.targetUserId !== me) return;
+      const by =
+        p.removedByRole === "owner" ? "the room owner" : "a co-owner";
+      toast.error(`You were removed from the room by ${by}.`);
+      router.replace("/");
+    },
+    onRoomKilled: () => {
+      const endedByYou =
+        Boolean(user?.userId && room?.createdBy === user.userId);
+      if (endedByYou) {
+        toast("You ended the room.");
+      } else {
+        toast.error("The host ended this room.");
+      }
+      clearRoomStore(roomId);
+      router.replace("/");
+    },
     onMemberRoleUpdated: ({ userId, role }) => {
       const current = getRoomStore(roomId)
         .getState()
         .members.find((m) => m.userId === userId);
       if (!current) return;
+      const prevRole = current.role;
       getRoomStore(roomId).getState().upsertMember(
         toMemberRow({
           userId: current.userId,
@@ -358,6 +392,21 @@ export default function RoomPage() {
           role,
         }),
       );
+      // Same idea as post-join: pull authoritative playback from the room
+      // if our capability changed (belt-and-suspenders; primary fix is no
+      // iframe remount on `interactive` — see RoomYouTubePlayer `playerOpts`).
+      const me =
+        user?.userId ??
+        (() => {
+          const t = getAuthToken();
+          return t ? decodeJwtPayload(t)?.userId : undefined;
+        })();
+      if (me && userId === me && prevRole === MEMBER_ROLE && role === "co-owner") {
+        requestFreshSnapshot();
+      }
+    },
+    onRoomSettingsUpdated: ({ settings: nextSettings }) => {
+      setSettings(nextSettings);
     },
     onQueueAdded: ({ item }) => {
       // The server broadcasts this for every successful add — both
@@ -608,19 +657,41 @@ export default function RoomPage() {
     };
   }, [room?.name]);
 
-  const handleLoopToggle = useCallback(async () => {
-    if (!isElevated || !settings) return;
-    const prev = settings;
-    const next: RoomSettingsDetail = { ...settings, loop: !settings.loop };
-    setSettings(next);
-    const result = await updateRoomSettings(roomId, { loop: next.loop });
+  const handleKillRoom = useCallback(() => {
+    getSocket().emit(
+      "room.kill",
+      { roomId },
+      (res: { ok?: boolean; error?: string } | undefined) => {
+        if (res?.ok) return;
+        toast.error(res?.error ?? "Could not end the room.");
+      },
+    );
+  }, [roomId]);
+
+  const handleLeaveRoom = useCallback(async () => {
+    const result = await leaveRoom(roomId);
     if (!result.ok) {
-      setSettings(prev);
+      toast.error(result.error);
+      return;
+    }
+    router.push("/");
+  }, [roomId, router]);
+
+  const handleLoopToggle = useCallback(async () => {
+    if (!isElevated) return;
+    const currentLoop = getRoomStore(roomId).getState().loopEnabled;
+    const nextLoop = !currentLoop;
+    getRoomStore(roomId).getState().setLoopEnabled(nextLoop);
+    setSettings((prev) => (prev ? { ...prev, loop: nextLoop } : prev));
+    const result = await updateRoomSettings(roomId, { loop: nextLoop });
+    if (!result.ok) {
+      getRoomStore(roomId).getState().setLoopEnabled(currentLoop);
+      setSettings((prev) => (prev ? { ...prev, loop: currentLoop } : prev));
       toast.error(result.error);
       return;
     }
     setSettings(result.settings);
-  }, [isElevated, settings, roomId]);
+  }, [isElevated, roomId]);
 
   const playlist = useMemo(
     () => roomCombinedQueue({ past, nowPlaying, cues }),
@@ -914,7 +985,8 @@ export default function RoomPage() {
 
   const handleAdvance = useCallback(
     (absoluteIndex: number) => {
-      getRoomStore(roomId).getState().advanceTo(absoluteIndex, settings?.loop ?? false);
+      const { loopEnabled } = getRoomStore(roomId).getState();
+      getRoomStore(roomId).getState().advanceTo(absoluteIndex, loopEnabled);
       // Emit the advance so other room members follow. Auto-advance
       // (state=0 ENDED → next index) is a "playing at t=0" emit. If
       // the index landed past the end (queue exhausted, no loop), the
@@ -923,7 +995,7 @@ export default function RoomPage() {
       const target = combined[absoluteIndex];
       if (target) emitForJump(absoluteIndex, target.videoId);
     },
-    [emitForJump, roomId, settings?.loop],
+    [emitForJump, roomId],
   );
 
   const handleQueueJump = useCallback(
@@ -999,9 +1071,12 @@ export default function RoomPage() {
           onAddVideo={handleAddVideo}
           onSearchPick={handleSearchPick}
           isOwner={isElevated}
+          isRoomCreator={isOwner}
           settings={settings}
           onSettingsUpdated={setSettings}
           currentUserId={user?.userId ?? null}
+          onKillRoom={isOwner ? handleKillRoom : undefined}
+          onLeaveRoom={!isOwner ? handleLeaveRoom : undefined}
         />
 
         <main className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1069,7 +1144,6 @@ export default function RoomPage() {
                 sessionStarted={sessionStarted}
                 phase={phase}
                 onJump={handleQueueJump}
-                loop={settings?.loop ?? false}
                 canEdit={isElevated}
                 canControlPlayback={canControlPlayback}
                 onLoopToggle={handleLoopToggle}

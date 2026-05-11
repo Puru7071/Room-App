@@ -62,3 +62,8 @@ export function appendMessage(args: {
 export function listMessages(roomId: string): ChatMessageWire[] {
   return messagesByRoom.get(roomId) ?? [];
 }
+
+/** Clear the in-memory chat buffer when a room is deleted. */
+export function clearChatForRoom(roomId: string) {
+  messagesByRoom.delete(roomId);
+}

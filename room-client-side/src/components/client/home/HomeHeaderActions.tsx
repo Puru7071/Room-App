@@ -3,6 +3,7 @@
 import { useContext, type ReactNode } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import { ThemeContext } from "@/components/client/theme/ThemeContext";
+import { HEADER_CLUSTER_CIRCLE_LAYOUT } from "@/components/client/home/headerClusterStyles";
 import { LogoutButton } from "@/components/client/home/LogoutButton";
 import { UserAvatar } from "@/components/client/home/UserAvatar";
 
@@ -46,7 +47,7 @@ export function HomeHeaderActions({
         type="button"
         tabIndex={-1}
         onClick={(e) => toggleTheme(e.clientX, e.clientY)}
-        className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border bg-card/90 text-muted shadow-sm transition hover:border-border hover:bg-card sm:h-10 sm:w-10"
+        className={`${HEADER_CLUSTER_CIRCLE_LAYOUT} cursor-pointer border border-border bg-card/90 text-muted shadow-sm transition hover:border-border hover:bg-card`}
         aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       >
         {isDark ? (

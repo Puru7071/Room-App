@@ -33,9 +33,10 @@ type RoomPageHeaderProps = {
   onSearchPick: (result: YouTubeSearchResult) => void;
   /** When set, owner-only private/public switch (left of theme control). */
   roomPrivateToggle?: RoomPrivateToggleConfig;
-  /** When true (requesting user equals `Room.createdBy`), shows the
-   *  settings gear in the right cluster. */
+  /** Creator or co-owner — settings gear, promote members in roster. */
   isOwner?: boolean;
+  /** Room creator only — demote co-owners in the member panel. */
+  isRoomCreator?: boolean;
   /** Current room settings (if loaded). Required for the settings
    *  popover; if null the gear is hidden even when `isOwner`. */
   settings?: RoomSettingsDetail | null;
@@ -45,6 +46,10 @@ type RoomPageHeaderProps = {
   onSettingsUpdated?: (next: RoomSettingsDetail) => void;
   /** Omitted from overlapping header chips; popover still lists everyone. */
   currentUserId?: string | null;
+  /** Room creator — hard-deletes the room via WebSocket; everyone is sent home. */
+  onKillRoom?: () => void;
+  /** Non-creator members — removes membership and navigates home. */
+  onLeaveRoom?: () => void;
 };
 
 export function RoomPageHeader({
@@ -55,9 +60,12 @@ export function RoomPageHeader({
   onSearchPick,
   roomPrivateToggle,
   isOwner,
+  isRoomCreator = false,
   settings,
   onSettingsUpdated,
   currentUserId = null,
+  onKillRoom,
+  onLeaveRoom,
 }: RoomPageHeaderProps) {
   const handleAddVideo = useCallback(() => {
     onAddVideo();
@@ -148,6 +156,23 @@ export function RoomPageHeader({
                 onPick={onSearchPick}
                 sizingClass="min-w-0 flex-1"
               />
+              {onKillRoom ? (
+                <button
+                  type="button"
+                  onClick={onKillRoom}
+                  className="shrink-0 cursor-pointer rounded-md border border-red-500/35 bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-700 transition hover:border-red-500/55 hover:bg-red-500/15 dark:text-red-400 dark:hover:bg-red-500/20 sm:text-sm"
+                >
+                  Kill Room
+                </button>
+              ) : onLeaveRoom ? (
+                <button
+                  type="button"
+                  onClick={onLeaveRoom}
+                  className="shrink-0 cursor-pointer rounded-md border border-border/70 bg-muted/20 px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition hover:border-border hover:bg-muted/40 hover:text-foreground sm:text-sm"
+                >
+                  Leave room
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -167,7 +192,8 @@ export function RoomPageHeader({
             beforeThemeToggle={
               <RoomHeaderMemberRoster
                 roomId={roomId}
-                isOwner={isOwner}
+                isElevated={Boolean(isOwner)}
+                isRoomCreator={isRoomCreator}
                 currentUserId={currentUserId}
               />
             }

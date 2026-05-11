@@ -44,8 +44,6 @@ type ChatProps = Pick<
 
 type RoomSidePanelProps = QueueProps & {
   roomId: string;
-  /** Current loop state from the server. */
-  loop: boolean;
   /**
    * Whether the requester can flip the loop / settings. When false the
    * loop button is rendered in a disabled state and clicks no-op.
@@ -82,7 +80,7 @@ const TAB_DEFS: ReadonlyArray<{ id: SidePanelTab; label: string }> = [
   { id: "calls", label: "Calls" },
 ];
 
-export function RoomSidePanel({
+function RoomSidePanelInner({
   roomId,
   past,
   nowPlaying,
@@ -90,7 +88,6 @@ export function RoomSidePanel({
   sessionStarted,
   phase,
   onJump,
-  loop,
   canEdit,
   canControlPlayback,
   onLoopToggle,
@@ -145,7 +142,7 @@ export function RoomSidePanel({
         </div>
         {tab === "queue" ? (
           <LoopButton
-            on={loop}
+            roomId={roomId}
             canEdit={canEdit}
             onClick={onLoopToggle}
           />
@@ -185,6 +182,8 @@ export function RoomSidePanel({
     </div>
   );
 }
+
+export const RoomSidePanel = memo(RoomSidePanelInner);
 
 const ChatMessagesPane = memo(function ChatMessagesPane({
   roomId,
@@ -342,14 +341,15 @@ function TabButton({
 }
 
 function LoopButton({
-  on,
+  roomId,
   canEdit,
   onClick,
 }: {
-  on: boolean;
+  roomId: string;
   canEdit: boolean;
   onClick?: () => void;
 }) {
+  const on = useRoomStore(roomId, (s) => s.loopEnabled);
   const handleClick = canEdit && onClick ? onClick : undefined;
   return (
     <button

@@ -23,6 +23,7 @@ import {
   listForRoom,
   removeRequest,
 } from "./joinRequests";
+import { executeRoomKill } from "../rooms/executeRoomKill";
 import { appendQueueItem } from "../rooms/queue/queueShared";
 import { isElevatedRoomModerator } from "../rooms/roleAuth";
 import type {
@@ -41,6 +42,7 @@ import type {
   RequestApprovePayload,
   RequestRejectPayload,
   RoomMemberWire,
+  RoomKillPayload,
   RoomSubscribePayload,
   SocketData,
 } from "./types";
@@ -261,6 +263,40 @@ export function registerRoomChannelHandlers(io: IOServer, socket: Socket) {
     // and player is ready — eliminates the buffering race the old
     // auto-poll caused.
   });
+
+  socket.on(
+    "room.kill",
+    async (payload: RoomKillPayload, ack?: (r: unknown) => void) => {
+      if (typeof payload?.roomId !== "string") {
+        ack?.({ ok: false, error: "Missing roomId." });
+        return;
+      }
+      const roomId = payload.roomId.trim();
+      if (!roomId) {
+        ack?.({ ok: false, error: "Missing roomId." });
+        return;
+      }
+      const kind = await classifyMembership(data.userId, roomId);
+      if (kind !== "owner") {
+        ack?.({ ok: false, error: "Only the room owner can kill the room." });
+        return;
+      }
+      const result = await executeRoomKill(io, data.userId, roomId);
+      if (!result.ok) {
+        if (result.error === "not-found") {
+          ack?.({ ok: false, error: "Room not found." });
+          return;
+        }
+        if (result.error === "forbidden") {
+          ack?.({ ok: false, error: "Only the room owner can kill the room." });
+          return;
+        }
+        ack?.({ ok: false, error: "Couldn't delete the room. Try again." });
+        return;
+      }
+      ack?.({ ok: true });
+    },
+  );
 
   socket.on(
     "room.playback.request-snapshot",

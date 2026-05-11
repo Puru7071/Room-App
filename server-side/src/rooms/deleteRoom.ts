@@ -15,7 +15,8 @@
  *   500 { ok: false, error }
  */
 import type { Request, Response } from "express";
-import { prisma } from "../db";
+import { getIo } from "../ws";
+import { executeRoomKill } from "./executeRoomKill";
 
 export async function deleteRoomHandler(req: Request, res: Response) {
   const roomIdParam = req.params.roomId;
@@ -26,26 +27,19 @@ export async function deleteRoomHandler(req: Request, res: Response) {
 
   const userId = req.user!.userId;
 
-  try {
-    const room = await prisma.room.findUnique({
-      where: { roomId },
-      select: { createdBy: true },
-    });
-    if (!room) {
+  const result = await executeRoomKill(getIo(), userId, roomId);
+  if (!result.ok) {
+    if (result.error === "not-found") {
       return res.status(404).json({ ok: false, error: "Room not found." });
     }
-    if (room.createdBy !== userId) {
+    if (result.error === "forbidden") {
       return res
         .status(403)
         .json({ ok: false, error: "Only the room creator can delete it." });
     }
-
-    await prisma.room.delete({ where: { roomId } });
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error("[rooms/delete] failed:", err);
     return res
       .status(500)
       .json({ ok: false, error: "Couldn't delete the room. Try again." });
   }
+  return res.status(200).json({ ok: true });
 }

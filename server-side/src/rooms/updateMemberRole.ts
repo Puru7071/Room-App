@@ -40,6 +40,14 @@ export async function updateMemberRoleHandler(req: Request, res: Response) {
       return res.status(403).json({ ok: false, error: "Forbidden." });
     }
 
+    // Demoting to VIEWER (from co-owner) is owner-only; co-owners cannot demote each other.
+    if (parsed.data.role === "VIEWER" && actorUserId !== room.createdBy) {
+      return res.status(403).json({
+        ok: false,
+        error: "Only the room owner can demote a co-owner.",
+      });
+    }
+
     const targetMember = await prisma.roomMember.findUnique({
       where: { userId_roomId: { userId: targetUserId, roomId } },
       select: { userId: true, isBanned: true },

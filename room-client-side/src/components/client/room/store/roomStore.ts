@@ -30,6 +30,8 @@ type RoomState = {
   chatUnreadCount: number;
   chatFirstUnreadIndex: number;
   typers: Record<string, { name: string }>;
+  /** Room settings slice used by tiny header controls (e.g. queue loop toggle). */
+  loopEnabled: boolean;
 };
 
 type RoomStore = RoomState & {
@@ -56,6 +58,7 @@ type RoomStore = RoomState & {
   setTyper: (userId: string, userName: string) => void;
   clearTyper: (userId: string) => void;
   clearTypers: () => void;
+  setLoopEnabled: (enabled: boolean) => void;
 };
 
 const initialState: RoomState = {
@@ -71,6 +74,7 @@ const initialState: RoomState = {
   chatUnreadCount: 0,
   chatFirstUnreadIndex: -1,
   typers: {},
+  loopEnabled: false,
 };
 
 function combinedQueue(state: Pick<RoomState, "past" | "nowPlaying" | "cues">) {
@@ -281,6 +285,7 @@ function createRoomStore(): StoreApi<RoomStore> {
         return { typers: next };
       }),
     clearTypers: () => set({ typers: {} }),
+    setLoopEnabled: (loopEnabled) => set({ loopEnabled }),
   }));
 }
 

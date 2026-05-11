@@ -97,6 +97,11 @@ export function findRequest(
   return null;
 }
 
+/** Drop all pending join requests for a room (e.g. room deleted / killed). */
+export function clearJoinRequestsForRoom(roomId: string) {
+  requestsByRoom.delete(roomId);
+}
+
 export function removeRequest(
   requestId: string,
 ): { roomId: string; userId: string; userName: string } | null {

@@ -11,8 +11,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
+import { HEADER_CLUSTER_CIRCLE_LAYOUT } from "@/components/client/home/headerClusterStyles";
 import { AppIcon } from "@/components/icons/AppIcon";
-import { updateRoomMemberRole } from "@/lib/api";
+import { kickRoomMember, updateRoomMemberRole } from "@/lib/api";
 import { initialsFromDisplayName } from "@/lib/display-name-initials";
 import {
   CO_OWNER_ROLE,
@@ -44,7 +45,10 @@ type PanelPos = { top: number; left: number; width: number };
 type RoomMemberFacepileProps = {
   roomId?: string;
   members: RoomMemberRow[];
-  isOwner?: boolean;
+  /** Creator or co-owner — can promote members to co-owner. */
+  isElevated?: boolean;
+  /** Room creator only — can demote co-owners. */
+  isRoomCreator?: boolean;
   /** Viewer can be highlighted if needed; chips now include everyone by default. */
   currentUserId?: string | null;
 };
@@ -52,7 +56,8 @@ type RoomMemberFacepileProps = {
 export function RoomMemberFacepile({
   roomId,
   members,
-  isOwner = false,
+  isElevated = false,
+  isRoomCreator = false,
   currentUserId = null,
 }: RoomMemberFacepileProps) {
   const [open, setOpen] = useState(false);
@@ -73,12 +78,43 @@ export function RoomMemberFacepile({
     });
   }, [members]);
 
-  const toggleMemberRole = useCallback(
+  const actorIsCoOwnerOnly = isElevated && !isRoomCreator;
+
+  const canShowKick = useCallback(
+    (m: RoomMemberRow) =>
+      isElevated &&
+      m.userId !== currentUserId &&
+      m.role !== OWNER_ADMIN_ROLE &&
+      !(actorIsCoOwnerOnly && m.role === CO_OWNER_ROLE),
+    [actorIsCoOwnerOnly, currentUserId, isElevated],
+  );
+
+  const kickMember = useCallback(
     async (member: RoomMemberRow) => {
+      if (!roomId || !canShowKick(member)) return;
+      if (busyByUserId[member.userId]) return;
+      setBusyByUserId((prev) => ({ ...prev, [member.userId]: true }));
+      try {
+        const result = await kickRoomMember(roomId, member.userId);
+        if (!result.ok) {
+          toast.error(result.error);
+        }
+      } finally {
+        setBusyByUserId((prev) => {
+          const next = { ...prev };
+          delete next[member.userId];
+          return next;
+        });
+      }
+    },
+    [busyByUserId, canShowKick, roomId],
+  );
+
+  const setMemberRole = useCallback(
+    async (member: RoomMemberRow, nextRole: "VIEWER" | "SUB_LEADER") => {
       if (!roomId) return;
       if (member.role === OWNER_ADMIN_ROLE) return;
       if (busyByUserId[member.userId]) return;
-      const nextRole = member.role === CO_OWNER_ROLE ? "VIEWER" : "SUB_LEADER";
       setBusyByUserId((prev) => ({ ...prev, [member.userId]: true }));
       try {
         const result = await updateRoomMemberRole(roomId, member.userId, nextRole);
@@ -181,7 +217,7 @@ export function RoomMemberFacepile({
           {sortedForList.map((m) => (
             <li
               key={m.userId}
-              className="grid grid-cols-[auto_minmax(0,1fr)_2.5rem] items-center gap-2.5 px-1 py-2 text-left text-sm"
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5 px-1 py-2 text-left text-sm"
             >
               <span
                 className={[
@@ -207,39 +243,63 @@ export function RoomMemberFacepile({
                   </span>
                 ) : null}
               </span>
-              <div className="flex h-8 w-10 shrink-0 items-center justify-end">
-                {isOwner &&
-                m.role !== OWNER_ADMIN_ROLE &&
+              <div className="flex h-8 shrink-0 items-center justify-end gap-0.5">
+                {canShowKick(m) ? (
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => void kickMember(m)}
+                    disabled={busyByUserId[m.userId]}
+                    aria-label={`Remove ${m.userName} from the room`}
+                    title="Remove from room"
+                    className={[
+                      "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg bg-transparent text-muted transition hover:text-amber-600 dark:hover:text-amber-400 focus:outline-none",
+                      "disabled:cursor-wait disabled:opacity-60",
+                    ].join(" ")}
+                  >
+                    <AppIcon icon="oui:push" className="h-5 w-5" aria-hidden />
+                  </button>
+                ) : null}
+                {isRoomCreator &&
+                m.role === CO_OWNER_ROLE &&
                 m.userId !== currentUserId ? (
                   <button
                     type="button"
                     tabIndex={-1}
-                    onClick={() => void toggleMemberRole(m)}
+                    onClick={() => void setMemberRole(m, "VIEWER")}
                     disabled={busyByUserId[m.userId]}
-                    aria-label={
-                      m.role === CO_OWNER_ROLE
-                        ? `Downvote ${m.userName}`
-                        : `Upvote ${m.userName}`
-                    }
-                    title={
-                      m.role === CO_OWNER_ROLE
-                        ? "Demote from co-owner"
-                        : "Promote to co-owner"
-                    }
+                    aria-label={`Demote ${m.userName} from co-owner`}
+                    title="Demote from co-owner"
                     className={[
-                      "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg bg-transparent transition focus:outline-none",
+                      "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg bg-transparent text-rose-400 transition hover:text-rose-300 focus:outline-none",
                       "disabled:cursor-wait disabled:opacity-60",
-                      m.role === CO_OWNER_ROLE
-                        ? "text-rose-400 hover:text-rose-300"
-                        : "text-muted hover:text-foreground",
                     ].join(" ")}
                   >
                     <AppIcon
                       icon="material-symbols:arrow-shape-up-stack"
-                      className={[
-                        "h-5 w-5",
-                        m.role === CO_OWNER_ROLE ? "rotate-180 transform" : "",
-                      ].join(" ")}
+                      className="h-5 w-5 rotate-180 transform"
+                      aria-hidden
+                    />
+                  </button>
+                ) : null}
+                {isElevated &&
+                m.role === MEMBER_ROLE &&
+                m.userId !== currentUserId ? (
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => void setMemberRole(m, "SUB_LEADER")}
+                    disabled={busyByUserId[m.userId]}
+                    aria-label={`Promote ${m.userName} to co-owner`}
+                    title="Promote to co-owner"
+                    className={[
+                      "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg bg-transparent text-muted transition hover:text-foreground focus:outline-none",
+                      "disabled:cursor-wait disabled:opacity-60",
+                    ].join(" ")}
+                  >
+                    <AppIcon
+                      icon="material-symbols:arrow-shape-up-stack"
+                      className="h-5 w-5"
                       aria-hidden
                     />
                   </button>
@@ -267,10 +327,14 @@ export function RoomMemberFacepile({
         <span className="flex items-center pl-0.5">
           {soloInRoom ? (
             <span
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-background bg-linear-to-br from-zinc-400 to-zinc-600 text-white shadow-sm sm:h-9 sm:w-9 dark:from-zinc-500 dark:to-zinc-800"
+              className={`${HEADER_CLUSTER_CIRCLE_LAYOUT} border-2 border-background bg-linear-to-br from-zinc-400 to-zinc-600 text-white shadow-sm dark:from-zinc-500 dark:to-zinc-800`}
               aria-hidden
             >
-              <AppIcon icon="lucide:users-round" className="h-4 w-4 sm:h-[18px] sm:w-[18px]" />
+              <AppIcon
+                icon="lucide:users-round"
+                className="h-[18px] w-[18px] sm:h-5 sm:w-5"
+                aria-hidden
+              />
             </span>
           ) : (
             <>
@@ -278,7 +342,7 @@ export function RoomMemberFacepile({
                 <span
                   key={m.userId}
                   className={[
-                    "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold sm:h-9 sm:w-9 sm:text-[11px]",
+                    `${HEADER_CLUSTER_CIRCLE_LAYOUT} border-2 border-background text-[10px] font-semibold sm:text-[11px]`,
                     gradientClassForUserId(m.userId),
                     i > 0 ? "-ml-2" : "",
                   ].join(" ")}
@@ -289,7 +353,7 @@ export function RoomMemberFacepile({
               ))}
               {overflow > 0 ? (
                 <span
-                  className="-ml-2 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-background bg-linear-to-br from-zinc-700 to-zinc-900 text-[10px] font-bold text-white shadow-sm sm:h-9 sm:w-9 sm:text-[11px] dark:from-zinc-600 dark:to-zinc-950"
+                  className={`-ml-2 ${HEADER_CLUSTER_CIRCLE_LAYOUT} border-2 border-background bg-linear-to-br from-zinc-700 to-zinc-900 text-[10px] font-bold text-white shadow-sm dark:from-zinc-600 dark:to-zinc-950 sm:text-[11px]`}
                   aria-hidden
                 >
                   +{overflow}

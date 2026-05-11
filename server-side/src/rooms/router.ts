@@ -18,6 +18,8 @@ import { joinRoomHandler } from "./joinRoom";
 import { myRoomsHandler } from "./myRooms";
 import { addToQueueHandler } from "./queue/addToQueue";
 import { getQueueHandler } from "./queue/getQueue";
+import { leaveRoomHandler } from "./leaveRoom";
+import { removeRoomMemberHandler } from "./removeRoomMember";
 import { updateMemberRoleHandler } from "./updateMemberRole";
 import { updateSettingsHandler } from "./updateSettings";
 
@@ -109,6 +111,22 @@ const updateMemberRoleLimiter = rateLimit({
   message: { ok: false, error: "Too many role changes. Try again shortly." },
 });
 
+const leaveRoomLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many requests. Try again shortly." },
+});
+
+const removeMemberLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "Too many removals. Try again shortly." },
+});
+
 export const roomsRouter = Router();
 
 roomsRouter.post(
@@ -140,6 +158,13 @@ roomsRouter.patch(
 );
 
 roomsRouter.delete(
+  "/:roomId/members/:userId",
+  removeMemberLimiter,
+  requireAuth,
+  removeRoomMemberHandler,
+);
+
+roomsRouter.delete(
   "/:roomId",
   deleteRoomLimiter,
   requireAuth,
@@ -151,6 +176,13 @@ roomsRouter.post(
   joinRoomLimiter,
   requireAuth,
   joinRoomHandler,
+);
+
+roomsRouter.post(
+  "/:roomId/leave",
+  leaveRoomLimiter,
+  requireAuth,
+  leaveRoomHandler,
 );
 
 roomsRouter.get(
