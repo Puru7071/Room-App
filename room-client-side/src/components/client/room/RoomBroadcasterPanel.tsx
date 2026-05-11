@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { AppIcon } from "@/components/icons/AppIcon";
 import { useRoomStore } from "@/components/client/room/store/roomStore";
 import { initialsFromDisplayName } from "@/lib/display-name-initials";
@@ -11,9 +12,8 @@ import { relativeFromIso } from "@/lib/youtube-api";
 
 type RoomBroadcasterPanelProps = {
   roomId: string;
-  /** Toggles the leader-only carousel content. Non-owners see the empty
-   *  state placeholder regardless of pending requests. */
-  isOwner: boolean;
+  /** Room creator or co-owner — join + video-add moderation carousel. */
+  canModerateBroadcasts: boolean;
   onApproveJoin: (requestId: string) => void;
   onRejectJoin: (requestId: string) => void;
   onApproveAdd: (requestId: string) => void;
@@ -25,11 +25,11 @@ type RoomBroadcasterPanelProps = {
  * successor to the old `RoomRequestsPanel`. Hosts a single-card
  * carousel of mixed broadcast items:
  *
- *   - **Join-room requests** (`kind: "join"`): leader sees, approves
- *     or rejects via existing `room.request.approve/reject` events.
- *   - **Video-add requests** (`kind: "add"`): raised by non-leaders
- *     in LIMITED edit-access rooms when they paste / search a video.
- *     Leader approves to insert into queue; rejects to discard.
+ *   - **Join-room requests** (`kind: "join"`): moderators see, approve
+ *     or reject via `room.request.approve/reject`.
+ *   - **Video-add requests** (`kind: "add"`): raised by non-elevated
+ *     members in LIMITED edit-access rooms. Moderators approve/reject
+ *     via `room.add-request.approve/reject`.
  *
  * Layout:
  *   ┌─ panel (room-corner-ripple-flip dot pattern bg) ──┐
@@ -50,14 +50,19 @@ type BroadcastItem =
 
 export function RoomBroadcasterPanel({
   roomId,
-  isOwner,
+  canModerateBroadcasts,
   onApproveJoin,
   onRejectJoin,
   onApproveAdd,
   onRejectAdd,
 }: RoomBroadcasterPanelProps) {
-  const joinRequests = useRoomStore(roomId, (s) => s.joinRequests);
-  const addRequests = useRoomStore(roomId, (s) => s.addRequests);
+  const { joinRequests, addRequests } = useRoomStore(
+    roomId,
+    useShallow((s) => ({
+      joinRequests: s.joinRequests,
+      addRequests: s.addRequests,
+    })),
+  );
   // Merge the two lists into a single carousel feed. Joins come first,
   // then video-adds — order is stable so the leader's "current index"
   // doesn't jump as new items of the opposite type arrive.
@@ -73,10 +78,10 @@ export function RoomBroadcasterPanel({
   const clampedIndex =
     items.length === 0 ? 0 : Math.min(currentIndex, Math.max(items.length - 1, 0));
 
-  const visible = isOwner ? items[clampedIndex] ?? null : null;
+  const visible = canModerateBroadcasts ? items[clampedIndex] ?? null : null;
   const canPrev = clampedIndex > 0;
   const canNext = clampedIndex < items.length - 1;
-  const showSlider = isOwner && items.length > 0;
+  const showSlider = canModerateBroadcasts && items.length > 0;
 
   return (
     <section
@@ -131,7 +136,7 @@ export function RoomBroadcasterPanel({
       {/* Body */}
       <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {visible === null ? (
-          <EmptyState isOwner={isOwner} />
+          <EmptyState canModerate={canModerateBroadcasts} />
         ) : visible.kind === "join" ? (
           <JoinRequestCard
             request={visible.req}
@@ -150,7 +155,7 @@ export function RoomBroadcasterPanel({
   );
 }
 
-function EmptyState({ isOwner }: { isOwner: boolean }) {
+function EmptyState({ canModerate }: { canModerate: boolean }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-3 text-center">
       <AppIcon
@@ -162,9 +167,9 @@ function EmptyState({ isOwner }: { isOwner: boolean }) {
         Quiet on the wire
       </p>
       <p className="text-[11px] leading-snug text-muted">
-        {isOwner
+        {canModerate
           ? "Join + video-add requests will land here"
-          : "Activites in the room will appear here"}
+          : "Activity in the room will appear here"}
       </p>
     </div>
   );

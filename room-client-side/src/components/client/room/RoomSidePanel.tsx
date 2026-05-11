@@ -1,12 +1,14 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { AppIcon } from "@/components/icons/AppIcon";
 import type { RoomQueueEntry } from "@/lib/room-types";
 import {
   useRoomStore,
   useRoomUiPrefsStore,
 } from "@/components/client/room/store/roomStore";
+import { useCanSendChat } from "@/components/client/room/useRoomPolicyGates";
+import { useShallow } from "zustand/react/shallow";
 import { ChatView, type ChatViewProps } from "./panels/ChatView";
 import { QueueView, type QueueViewProps } from "./panels/QueueView";
 import { RoomParticlesBackground } from "./panels/RoomParticlesBackground";
@@ -29,17 +31,19 @@ type SidePanelTab = "queue" | "chat" | "calls";
 
 type QueueProps = Pick<
   QueueViewProps,
-  "past" | "nowPlaying" | "cues" | "sessionStarted" | "phase" | "onJump"
+  | "past"
+  | "nowPlaying"
+  | "cues"
+  | "sessionStarted"
+  | "phase"
+  | "onJump"
+  | "currentUserId"
+  | "roomCreatedBy"
 >;
 
 type ChatProps = Pick<
   ChatViewProps,
-  | "roomId"
-  | "currentUserId"
-  | "canSend"
-  | "onSend"
-  | "onSendGif"
-  | "onTypingChange"
+  "roomId" | "currentUserId" | "onSend" | "onSendGif" | "onTypingChange"
 >;
 
 type RoomSidePanelProps = QueueProps & {
@@ -49,22 +53,11 @@ type RoomSidePanelProps = QueueProps & {
    * loop button is rendered in a disabled state and clicks no-op.
    */
   canEdit: boolean;
-  /**
-   * Whether the requester is allowed to drive playback (queue jumps,
-   * via the row-click in QueueView). Mirrors the page-level rule:
-   * `isOwner || nature === "PUBLIC"`. When false, queue rows render
-   * as non-interactive `<div>`s.
-   */
-  canControlPlayback: boolean;
   /** Called when the loop button is clicked (only fires when `canEdit`). */
   onLoopToggle?: () => void;
   /** True while the queue is being fetched from the server on page mount. */
   queueLoading?: boolean;
   /* ---- chat props (forwarded to ChatView) ---- */
-  /** The viewing user's id, for own-vs-other message styling. */
-  currentUserId: ChatProps["currentUserId"];
-  /** Gate for the composer (LIMITED chat → owner-only). */
-  canSendChat: ChatProps["canSend"];
   /** Submit a chat message. */
   onSendChat: ChatProps["onSend"];
   /** Send a GIF by URL (Giphy CDN). */
@@ -80,6 +73,33 @@ const TAB_DEFS: ReadonlyArray<{ id: SidePanelTab; label: string }> = [
   { id: "calls", label: "Calls" },
 ];
 
+/**
+ * Isolates `chatUnreadCount` from `RoomSidePanelInner` so new messages
+ * bumping unread do not re-render the queue tab / Virtuoso.
+ */
+const ChatTabWithUnreadBadge = memo(function ChatTabWithUnreadBadge({
+  roomId,
+  label,
+  active,
+  onClick,
+}: {
+  roomId: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const chatUnreadCount = useRoomStore(roomId, (s) => s.chatUnreadCount);
+  return (
+    <TabButton
+      label={label}
+      active={active}
+      unreadBadge={!active ? chatUnreadCount : 0}
+      onClick={onClick}
+    />
+  );
+});
+ChatTabWithUnreadBadge.displayName = "ChatTabWithUnreadBadge";
+
 function RoomSidePanelInner({
   roomId,
   past,
@@ -89,18 +109,19 @@ function RoomSidePanelInner({
   phase,
   onJump,
   canEdit,
-  canControlPlayback,
   onLoopToggle,
   queueLoading = false,
   currentUserId,
-  canSendChat,
+  roomCreatedBy,
   onSendChat,
   onSendChatGif,
   onTypingChange,
   className = "",
 }: RoomSidePanelProps) {
   const [tab, setTab] = useState<SidePanelTab>("queue");
-  const chatUnreadCount = useRoomStore(roomId, (s) => s.chatUnreadCount);
+  const selectQueue = useCallback(() => setTab("queue"), []);
+  const selectChat = useCallback(() => setTab("chat"), []);
+  const selectCalls = useCallback(() => setTab("calls"), []);
   const chatReceiveSoundEnabled = useRoomUiPrefsStore(
     (s) => s.chatReceiveSoundEnabled,
   );
@@ -130,15 +151,29 @@ function RoomSidePanelInner({
           aria-label="Side panel"
           className="flex items-center gap-0.5"
         >
-          {TAB_DEFS.map((t) => (
-            <TabButton
-              key={t.id}
-              label={t.label}
-              active={tab === t.id}
-              unreadBadge={t.id === "chat" && tab !== "chat" ? chatUnreadCount : 0}
-              onClick={() => setTab(t.id)}
-            />
-          ))}
+          {TAB_DEFS.map((t) => {
+            const active = tab === t.id;
+            if (t.id === "chat") {
+              return (
+                <ChatTabWithUnreadBadge
+                  key={t.id}
+                  roomId={roomId}
+                  label={t.label}
+                  active={active}
+                  onClick={selectChat}
+                />
+              );
+            }
+            const onSelect = t.id === "queue" ? selectQueue : selectCalls;
+            return (
+              <TabButton
+                key={t.id}
+                label={t.label}
+                active={active}
+                onClick={onSelect}
+              />
+            );
+          })}
         </div>
         {tab === "queue" ? (
           <LoopButton
@@ -157,20 +192,22 @@ function RoomSidePanelInner({
       <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {tab === "queue" ? (
           <QueueView
+            roomId={roomId}
+            currentUserId={currentUserId}
+            roomCreatedBy={roomCreatedBy}
             past={past}
             nowPlaying={nowPlaying}
             cues={cues}
             sessionStarted={sessionStarted}
             phase={phase}
-            onJump={canControlPlayback ? onJump : undefined}
-            canControlPlayback={canControlPlayback}
+            onJump={onJump}
             loading={queueLoading}
           />
         ) : tab === "chat" ? (
           <ChatMessagesPane
             roomId={roomId}
             currentUserId={currentUserId}
-            canSend={canSendChat}
+            roomCreatedBy={roomCreatedBy}
             onSend={onSendChat}
             onSendGif={onSendChatGif}
             onTypingChange={onTypingChange}
@@ -188,22 +225,29 @@ export const RoomSidePanel = memo(RoomSidePanelInner);
 const ChatMessagesPane = memo(function ChatMessagesPane({
   roomId,
   currentUserId,
-  canSend,
+  roomCreatedBy,
   onSend,
   onSendGif,
   onTypingChange,
 }: {
   roomId: string;
   currentUserId: string | null;
-  canSend: boolean;
+  roomCreatedBy: string | null;
   onSend: (body: string) => void;
   onSendGif: (gifUrl: string) => void;
   onTypingChange: (value: string) => void;
 }) {
-  const messages = useRoomStore(roomId, (s) => s.chatMessages);
-  const unreadCount = useRoomStore(roomId, (s) => s.chatUnreadCount);
-  const firstUnreadIndex = useRoomStore(roomId, (s) => s.chatFirstUnreadIndex);
-  const markChatReadToLatest = useRoomStore(roomId, (s) => s.markChatReadToLatest);
+  const canSend = useCanSendChat(roomId, currentUserId, roomCreatedBy);
+  const { messages, unreadCount, firstUnreadIndex, markChatReadToLatest } =
+    useRoomStore(
+      roomId,
+      useShallow((s) => ({
+        messages: s.chatMessages,
+        unreadCount: s.chatUnreadCount,
+        firstUnreadIndex: s.chatFirstUnreadIndex,
+        markChatReadToLatest: s.markChatReadToLatest,
+      })),
+    );
   return (
     <ChatView
       roomId={roomId}

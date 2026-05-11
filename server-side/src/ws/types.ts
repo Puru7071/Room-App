@@ -7,9 +7,9 @@
  *   room.request.list    — server-emitted, current pending requests
  *   room.request.created — server-emitted, a new request just landed
  *   room.request.expired — server-emitted, TTL sweep removed one
- *   room.request.approve — client-emitted by leader, approve a request
+ *   room.request.approve — client-emitted by a moderator, approve a request
  *   room.request.approved — server-emitted to requester
- *   room.request.reject  — client-emitted by leader, reject a request
+ *   room.request.reject  — client-emitted by a moderator, reject a request
  *   room.request.rejected — server-emitted to requester
  *   room.member.joined   — server-emitted to room channel on any join
  *   room.kill            — client-emitted by room creator; deletes room + `room.killed`

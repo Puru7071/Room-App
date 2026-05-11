@@ -2,9 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 import { HomeHeaderActions } from "@/components/client/home/HomeHeaderActions";
-import type { RoomSettingsDetail } from "@/lib/api";
 import type { YouTubeSearchResult } from "@/lib/youtube-api";
 import { RoomHeaderMemberRoster } from "./RoomHeaderMemberRoster";
 import { RoomPrivateToggle } from "./RoomPrivateToggle";
@@ -37,13 +36,6 @@ type RoomPageHeaderProps = {
   isOwner?: boolean;
   /** Room creator only — demote co-owners in the member panel. */
   isRoomCreator?: boolean;
-  /** Current room settings (if loaded). Required for the settings
-   *  popover; if null the gear is hidden even when `isOwner`. */
-  settings?: RoomSettingsDetail | null;
-  /** Called when the settings popover successfully (or optimistically)
-   *  updates a setting. Wires the parent's `setSettings` so the panel
-   *  reflects the latest server-truth. */
-  onSettingsUpdated?: (next: RoomSettingsDetail) => void;
   /** Omitted from overlapping header chips; popover still lists everyone. */
   currentUserId?: string | null;
   /** Room creator — hard-deletes the room via WebSocket; everyone is sent home. */
@@ -52,7 +44,7 @@ type RoomPageHeaderProps = {
   onLeaveRoom?: () => void;
 };
 
-export function RoomPageHeader({
+export const RoomPageHeader = memo(function RoomPageHeader({
   roomId,
   videoUrl,
   onVideoUrlChange,
@@ -61,8 +53,6 @@ export function RoomPageHeader({
   roomPrivateToggle,
   isOwner,
   isRoomCreator = false,
-  settings,
-  onSettingsUpdated,
   currentUserId = null,
   onKillRoom,
   onLeaveRoom,
@@ -200,13 +190,7 @@ export function RoomPageHeader({
             afterTheme={
               <>
                 <RoomShareButton roomId={roomId} />
-                {isOwner && settings && onSettingsUpdated ? (
-                  <RoomSettingsControl
-                    roomId={roomId}
-                    settings={settings}
-                    onUpdated={onSettingsUpdated}
-                  />
-                ) : null}
+                {isOwner ? <RoomSettingsControl roomId={roomId} /> : null}
               </>
             }
           />
@@ -214,4 +198,4 @@ export function RoomPageHeader({
       </div>
     </header>
   );
-}
+});

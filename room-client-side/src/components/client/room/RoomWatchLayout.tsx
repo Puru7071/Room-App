@@ -1,7 +1,32 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
+
+/**
+ * Left column (player + now-playing). Memoized so parent layout commits
+ * that only touch the right column (e.g. chat unread) can bail out
+ * here when `player` / `nowPlaying` element references are stable.
+ */
+const RoomWatchLeftColumn = memo(function RoomWatchLeftColumn({
+  playerRef,
+  player,
+  nowPlaying,
+}: {
+  playerRef: RefObject<HTMLDivElement | null>;
+  player: ReactNode;
+  nowPlaying: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 sm:gap-2.5">
+      <div ref={playerRef} className="min-h-0 min-w-0 flex-1 overflow-visible">
+        {player}
+      </div>
+      <div className="min-w-0 shrink-0">{nowPlaying}</div>
+    </div>
+  );
+});
+RoomWatchLeftColumn.displayName = "RoomWatchLeftColumn";
 
 type RoomWatchLayoutProps = {
   player: ReactNode;
@@ -69,12 +94,11 @@ export function RoomWatchLayout({
 
   return (
     <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col gap-4 px-4 py-4 sm:px-8 lg:flex-row lg:items-start lg:gap-x-6">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 sm:gap-2.5">
-        <div ref={playerRef} className="min-h-0 min-w-0 flex-1 overflow-visible">
-          {player}
-        </div>
-        <div className="min-w-0 shrink-0">{nowPlaying}</div>
-      </div>
+      <RoomWatchLeftColumn
+        playerRef={playerRef}
+        player={player}
+        nowPlaying={nowPlaying}
+      />
       <div className="flex min-h-0 w-full min-w-0 shrink-0 flex-col gap-2 sm:gap-2.5 lg:w-[min(100%,402px)]">
         {/* Queue: height-locked to the player on lg+ so it visually
             mirrors the player's height like before. The lock lives on

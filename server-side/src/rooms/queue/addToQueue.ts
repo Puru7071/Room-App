@@ -8,11 +8,12 @@
  *     are handled by `appendQueueItem` (shared with the WS approve
  *     handler). Returns 200 with `status: "added"` + the new item.
  *
- *   - **`editAccess === "LIMITED"` and caller is NOT owner**: create
+ *   - **`editAccess === "LIMITED"` and caller is not elevated**: create
  *     an in-memory video-add request, emit `room.add-request.created`
- *     to the leader's user channel so their broadcaster panel shows a
- *     pending card. Returns 202 with `status: "request-pending"` + the
- *     request id. The leader then approves/rejects via WS.
+ *     to each moderator's user channel (creator + co-owners) so the
+ *     broadcaster panel can show a pending card. Returns 202 with
+ *     `status: "request-pending"` + the request id. A moderator then
+ *     approves/rejects via WS.
  *
  * Body: { videoId: string }
  *
@@ -33,7 +34,10 @@ import { prisma } from "../../db";
 import { getIo } from "../../ws";
 import { addAddRequest } from "../../ws/addRequests";
 import { appendQueueItem } from "./queueShared";
-import { isElevatedRoomModerator } from "../roleAuth";
+import {
+  isElevatedRoomModerator,
+  listElevatedModeratorUserIds,
+} from "../roleAuth";
 
 const addToQueueSchema = z.object({
   videoId: z
@@ -84,9 +88,12 @@ export async function addToQueueHandler(req: Request, res: Response) {
     // LIMITED edit-access + non-owner → request flow.
     if (room.settings?.editAccess === "LIMITED" && !isElevated) {
       const reqRow = addAddRequest(roomId, { userId, userName }, videoId);
-      getIo()
-        ?.to(`user:${room.createdBy}`)
-        .emit("room.add-request.created", { request: reqRow });
+      const io = getIo();
+      const moderatorIds = await listElevatedModeratorUserIds(roomId);
+      const payload = { request: reqRow };
+      for (const modId of moderatorIds) {
+        io?.to(`user:${modId}`).emit("room.add-request.created", payload);
+      }
       return res.status(202).json({
         ok: true,
         status: "request-pending",

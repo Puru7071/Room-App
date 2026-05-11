@@ -36,9 +36,9 @@ import type {
 } from "@/lib/ws-events";
 
 type Handlers = {
-  /** Initial set of pending requests, sent only to the room leader on subscribe. */
+  /** Initial set of pending requests, sent to elevated members on subscribe. */
   onRequestList?: (requests: JoinRequestWire[]) => void;
-  /** A new pending request just arrived (leader-only). */
+  /** A new pending request arrived (personal + room channels). */
   onRequestCreated?: (request: JoinRequestWire) => void;
   /** TTL sweep evicted a request OR a leader resolved one in another tab. */
   onRequestExpired?: (requestId: string) => void;
@@ -91,9 +91,9 @@ type Handlers = {
    */
   onPlaybackPollState?: (payload: PlaybackPollPayload) => void;
   /* --------- video-add requests (broadcaster carousel) ---------- */
-  /** Initial set of pending video-add requests, sent to leaders on subscribe. */
+  /** Initial set of pending video-add requests, sent to elevated members on subscribe. */
   onAddRequestList?: (requests: VideoAddRequestWire[]) => void;
-  /** A new video-add request just arrived (leader-only, user channel). */
+  /** A new video-add request (personal channels for moderators + room broadcast). */
   onAddRequestCreated?: (request: VideoAddRequestWire) => void;
   /** TTL sweep evicted a video-add request (broadcast on room channel). */
   onAddRequestExpired?: (requestId: string) => void;

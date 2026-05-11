@@ -100,7 +100,7 @@ function PlayingCard({
       />
       <div
         aria-hidden
-        className="absolute inset-0 bg-gradient-to-r from-white/92 via-white/82 to-white/55 dark:from-black/90 dark:via-black/82 dark:to-black/60"
+        className="absolute inset-0 bg-linear-to-r from-white/92 via-white/82 to-white/55 dark:from-black/90 dark:via-black/82 dark:to-black/60"
       />
 
       <div

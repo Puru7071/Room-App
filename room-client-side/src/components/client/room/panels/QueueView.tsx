@@ -3,6 +3,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { AppIcon } from "@/components/icons/AppIcon";
+import { useCanControlPlayback } from "@/components/client/room/useRoomPolicyGates";
 import type { RoomQueueEntry } from "@/lib/room-types";
 import { useYouTubeOEmbedTitle } from "@/lib/use-youtube-oembed-title";
 import { youtubeThumbnailUrl } from "@/lib/youtube";
@@ -28,19 +29,16 @@ type QueueJumpPayload =
   | { zone: "next"; index: number };
 
 export type QueueViewProps = {
+  /** Used with `currentUserId` / `roomCreatedBy` for a narrow `editAccess` subscription. */
+  roomId: string;
+  currentUserId: string | null;
+  roomCreatedBy: string | null;
   past: RoomQueueEntry[];
   nowPlaying: RoomQueueEntry | null;
   cues: RoomQueueEntry[];
   sessionStarted: boolean;
   phase: "default" | "playing" | "stopped";
   onJump?: (payload: QueueJumpPayload) => void;
-  /**
-   * Whether the requester is allowed to drive playback. When false the
-   * past/next rows are non-interactive AND visually marked with a
-   * not-allowed cursor on hover. Drives the disabled affordance even
-   * though `onJump` is independently undefined in the same case.
-   */
-  canControlPlayback?: boolean;
   /**
    * `true` while the queue is being fetched from the server on page
    * mount. Renders skeleton placeholder rows instead of the empty
@@ -175,15 +173,23 @@ function QueueListRow({
 }
 
 export function QueueView({
+  roomId,
+  currentUserId,
+  roomCreatedBy,
   past,
   nowPlaying,
   cues,
   sessionStarted,
   phase,
   onJump,
-  canControlPlayback = true,
   loading = false,
 }: QueueViewProps) {
+  const canControlPlayback = useCanControlPlayback(
+    roomId,
+    currentUserId,
+    roomCreatedBy,
+  );
+  const jumpHandler = canControlPlayback ? onJump : undefined;
   const rows = useMemo((): RowModel[] => {
     const out: RowModel[] = [];
     past.forEach((entry, i) => {
@@ -282,10 +288,19 @@ export function QueueView({
                   entry={row.entry}
                   kind={row.kind}
                   onActivate={
-                    onJump && row.kind === "past" && row.pastIndex !== undefined
-                      ? () => onJump({ zone: "past", index: row.pastIndex! })
-                      : onJump && row.kind === "next" && row.cueIndex !== undefined
-                        ? () => onJump({ zone: "next", index: row.cueIndex! })
+                    jumpHandler &&
+                    row.kind === "past" &&
+                    row.pastIndex !== undefined
+                      ? () =>
+                          jumpHandler({ zone: "past", index: row.pastIndex! })
+                      : jumpHandler &&
+                          row.kind === "next" &&
+                          row.cueIndex !== undefined
+                        ? () =>
+                            jumpHandler({
+                              zone: "next",
+                              index: row.cueIndex!,
+                            })
                         : undefined
                   }
                   disabled={

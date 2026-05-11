@@ -4,6 +4,7 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import { useStore } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ThemePreference } from "@/lib/theme-preference";
+import type { RoomSettingsDetail } from "@/lib/api";
 import type {
   ChatMessageWire,
   JoinRequestWire,
@@ -30,6 +31,7 @@ type RoomState = {
   chatUnreadCount: number;
   chatFirstUnreadIndex: number;
   typers: Record<string, { name: string }>;
+  roomSettings: RoomSettingsDetail | null;
   /** Room settings slice used by tiny header controls (e.g. queue loop toggle). */
   loopEnabled: boolean;
 };
@@ -58,6 +60,7 @@ type RoomStore = RoomState & {
   setTyper: (userId: string, userName: string) => void;
   clearTyper: (userId: string) => void;
   clearTypers: () => void;
+  setRoomSettings: (settings: RoomSettingsDetail | null) => void;
   setLoopEnabled: (enabled: boolean) => void;
 };
 
@@ -74,6 +77,7 @@ const initialState: RoomState = {
   chatUnreadCount: 0,
   chatFirstUnreadIndex: -1,
   typers: {},
+  roomSettings: null,
   loopEnabled: false,
 };
 
@@ -285,6 +289,11 @@ function createRoomStore(): StoreApi<RoomStore> {
         return { typers: next };
       }),
     clearTypers: () => set({ typers: {} }),
+    setRoomSettings: (roomSettings) =>
+      set({
+        roomSettings,
+        loopEnabled: roomSettings?.loop ?? false,
+      }),
     setLoopEnabled: (loopEnabled) => set({ loopEnabled }),
   }));
 }

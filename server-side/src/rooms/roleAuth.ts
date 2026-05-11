@@ -1,5 +1,23 @@
 import { prisma } from "../db";
 
+/** Room creator plus active co-owners (`SUB_LEADER`). Used for WS fan-out. */
+export async function listElevatedModeratorUserIds(
+  roomId: string,
+): Promise<string[]> {
+  const room = await prisma.room.findUnique({
+    where: { roomId },
+    select: { createdBy: true },
+  });
+  if (!room) return [];
+  const coOwners = await prisma.roomMember.findMany({
+    where: { roomId, isBanned: false, status: "SUB_LEADER" },
+    select: { userId: true },
+  });
+  const ids = new Set<string>([room.createdBy]);
+  for (const m of coOwners) ids.add(m.userId);
+  return [...ids];
+}
+
 export async function isRoomCreator(
   userId: string,
   roomId: string,

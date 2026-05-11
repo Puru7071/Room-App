@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useRoomStore } from "@/components/client/room/store/roomStore";
 import { RoomMemberFacepile } from "@/components/client/room/RoomMemberFacepile";
 
@@ -19,12 +20,11 @@ function RoomHeaderMemberRosterInner({
   isRoomCreator = false,
   currentUserId = null,
 }: RoomHeaderMemberRosterProps) {
-  const members = useRoomStore(roomId, (s) => s.members);
-  const stableMembers = useMemo(() => members, [members]);
+  const members = useRoomStore(roomId, useShallow((s) => s.members));
   return (
     <RoomMemberFacepile
       roomId={roomId}
-      members={stableMembers}
+      members={members}
       isElevated={isElevated}
       isRoomCreator={isRoomCreator}
       currentUserId={currentUserId}

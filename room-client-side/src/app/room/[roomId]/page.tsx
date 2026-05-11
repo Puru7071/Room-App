@@ -34,10 +34,8 @@ import {
   useRoomStore,
   type LocalChatMessage,
 } from "@/components/client/room/store/roomStore";
-import {
-  RoomYouTubePlayer,
-  type RoomYouTubePlayerHandle,
-} from "@/components/client/room/RoomYouTubePlayer";
+import { RoomYouTubePlayerWithInteractivePolicy } from "@/components/client/room/RoomYouTubePlayerWithInteractivePolicy";
+import type { RoomYouTubePlayerHandle } from "@/components/client/room/RoomYouTubePlayer";
 import { useRoomSocket } from "@/components/client/room/useRoomSocket";
 import {
   addToRoomQueue,
@@ -47,7 +45,6 @@ import {
   leaveRoom,
   updateRoomSettings,
   type RoomDetail,
-  type RoomSettingsDetail,
 } from "@/lib/api";
 import type {
   ChatSendAck,
@@ -62,6 +59,10 @@ import {
 } from "@/lib/room-types";
 import { extractYouTubeVideoId } from "@/lib/youtube";
 import type { YouTubeSearchResult } from "@/lib/youtube-api";
+import {
+  computeCanControlPlayback,
+  computeCanSendChat,
+} from "@/components/client/room/useRoomPolicyGates";
 
 /**
  * Local membership status, derived from the `POST /rooms/:id/join` call:
@@ -98,7 +99,6 @@ export default function RoomPage() {
 
   const { user } = useAuthToken();
   const [room, setRoom] = useState<RoomDetail | null>(null);
-  const [settings, setSettings] = useState<RoomSettingsDetail | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [joinStatus, setJoinStatus] = useState<JoinStatus>("joining");
   const videoUrl = useRoomStore(roomId, (s) => s.videoUrl);
@@ -126,13 +126,6 @@ export default function RoomPage() {
     };
   }, [roomId]);
 
-  // Keep the tiny loop-toggle slice in Zustand synced from server-truth
-  // settings so only the loop button needs to subscribe.
-  useEffect(() => {
-    if (!settings) return;
-    getRoomStore(roomId).getState().setLoopEnabled(settings.loop);
-  }, [roomId, settings]);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -145,7 +138,7 @@ export default function RoomPage() {
         return;
       }
       setRoom(result.room);
-      setSettings(result.room.settings);
+      getRoomStore(roomId).getState().setRoomSettings(result.room.settings);
 
       // Now actually try to JOIN. Public rooms or the leader come back
       // `joined`/`already-member` instantly; private rooms come back
@@ -220,14 +213,6 @@ export default function RoomPage() {
   );
   const isCoOwner = myMemberRole === CO_OWNER_ROLE;
   const isElevated = isOwner || isCoOwner;
-  // Authority is governed by `editAccess`, NOT `nature`:
-  //   ALL     → everyone can pause/play/scrub/jump and add directly.
-  //   LIMITED → only the owner can; non-owners' top-bar adds become
-  //             video-add requests (handled server-side in addToQueue).
-  // `nature` only governs join admission, not playback authority.
-  const canControlPlayback = isElevated || settings?.editAccess === "ALL";
-  // Chat send authority. `chatRights: LIMITED` → owner-only chat.
-  const canSendChat = isElevated || settings?.chatRights === "ALL";
 
   /* --------------- playback sync state (refs only) --------------- */
 
@@ -320,7 +305,7 @@ export default function RoomPage() {
       // corresponding `removed` event filters the leader's panel —
       // no need to duplicate that here.
       setRoom(payload.room);
-      setSettings(payload.room.settings);
+      getRoomStore(roomId).getState().setRoomSettings(payload.room.settings);
       setJoinStatus("joined");
     },
     onRequestRejected: () => {
@@ -406,7 +391,7 @@ export default function RoomPage() {
       }
     },
     onRoomSettingsUpdated: ({ settings: nextSettings }) => {
-      setSettings(nextSettings);
+      getRoomStore(roomId).getState().setRoomSettings(nextSettings);
     },
     onQueueAdded: ({ item }) => {
       // The server broadcasts this for every successful add — both
@@ -483,7 +468,7 @@ export default function RoomPage() {
     },
     onAddRequestRejected: () => {
       // I'm the requester: my add was rejected. Soft toast, no redirect.
-      toast.error("Host declined your video.");
+      toast.error("Your video request was declined.");
     },
     /* ---- chat ---- */
     onChatHistory: (msgs) => getRoomStore(roomId).getState().setChatHistory(msgs),
@@ -532,6 +517,7 @@ export default function RoomPage() {
   const handleSendChat = useCallback(
     (body: string) => {
       if (!user) return;
+      if (!computeCanSendChat(roomId, user.userId, room?.createdBy)) return;
       const trimmed = body.trim();
       if (trimmed.length === 0 || trimmed.length > 2000) return;
       const clientNonce = crypto.randomUUID();
@@ -561,12 +547,13 @@ export default function RoomPage() {
         },
       );
     },
-    [roomId, user],
+    [roomId, room?.createdBy, user],
   );
 
   const handleSendChatGif = useCallback(
     (gifUrl: string) => {
       if (!user) return;
+      if (!computeCanSendChat(roomId, user.userId, room?.createdBy)) return;
       const trimmed = gifUrl.trim();
       if (trimmed.length === 0 || trimmed.length > 2048) return;
       if (!trimmed.startsWith("https://")) return;
@@ -599,7 +586,7 @@ export default function RoomPage() {
         },
       );
     },
-    [roomId, user],
+    [roomId, room?.createdBy, user],
   );
 
   /**
@@ -679,18 +666,21 @@ export default function RoomPage() {
 
   const handleLoopToggle = useCallback(async () => {
     if (!isElevated) return;
-    const currentLoop = getRoomStore(roomId).getState().loopEnabled;
+    const store = getRoomStore(roomId).getState();
+    const currentSettings = store.roomSettings;
+    if (!currentSettings) return;
+    const currentLoop = store.loopEnabled;
     const nextLoop = !currentLoop;
-    getRoomStore(roomId).getState().setLoopEnabled(nextLoop);
-    setSettings((prev) => (prev ? { ...prev, loop: nextLoop } : prev));
+    getRoomStore(roomId)
+      .getState()
+      .setRoomSettings({ ...currentSettings, loop: nextLoop });
     const result = await updateRoomSettings(roomId, { loop: nextLoop });
     if (!result.ok) {
-      getRoomStore(roomId).getState().setLoopEnabled(currentLoop);
-      setSettings((prev) => (prev ? { ...prev, loop: currentLoop } : prev));
+      getRoomStore(roomId).getState().setRoomSettings(currentSettings);
       toast.error(result.error);
       return;
     }
-    setSettings(result.settings);
+    getRoomStore(roomId).getState().setRoomSettings(result.settings);
   }, [isElevated, roomId]);
 
   const playlist = useMemo(
@@ -716,7 +706,11 @@ export default function RoomPage() {
    */
   const emitPlayback = useCallback(
     (opts: { state: "playing" | "paused"; time: number }) => {
-      if (!canControlPlayback) return;
+      if (
+        !computeCanControlPlayback(roomId, user?.userId, room?.createdBy)
+      ) {
+        return;
+      }
       const queueState = getRoomStore(roomId).getState();
       if (!queueState.nowPlaying) return;
       if (applyingRemoteSyncRef.current) return;
@@ -740,7 +734,7 @@ export default function RoomPage() {
       lastSyncRef.current = next;
       getSocket().emit("room.playback.update", { roomId, ...next });
     },
-    [canControlPlayback, roomId],
+    [roomId, room?.createdBy, user?.userId],
   );
 
   /**
@@ -751,7 +745,11 @@ export default function RoomPage() {
    */
   const emitForJump = useCallback(
     (newIndex: number, newVideoId: string) => {
-      if (!canControlPlayback) return;
+      if (
+        !computeCanControlPlayback(roomId, user?.userId, room?.createdBy)
+      ) {
+        return;
+      }
       const next = {
         videoId: newVideoId,
         position: newIndex,
@@ -761,7 +759,7 @@ export default function RoomPage() {
       lastSyncRef.current = next;
       getSocket().emit("room.playback.update", { roomId, ...next });
     },
-    [canControlPlayback, roomId],
+    [roomId, room?.createdBy, user?.userId],
   );
 
   /**
@@ -983,6 +981,13 @@ export default function RoomPage() {
     [postAddVideo],
   );
 
+  const handleVideoUrlChange = useCallback(
+    (value: string) => {
+      getRoomStore(roomId).getState().setVideoUrl(value);
+    },
+    [roomId],
+  );
+
   const handleAdvance = useCallback(
     (absoluteIndex: number) => {
       const { loopEnabled } = getRoomStore(roomId).getState();
@@ -1016,6 +1021,154 @@ export default function RoomPage() {
       emitForJump(absIndex, target.videoId);
     },
     [emitForJump, roomId],
+  );
+
+  const handlePlayerPlayStateChange = useCallback(
+    (s: "playing" | "paused") => {
+      emitPlayback({
+        state: s,
+        time: playerHandleRef.current?.getCurrentTime() ?? 0,
+      });
+    },
+    [emitPlayback],
+  );
+
+  const handlePlayerSeek = useCallback(
+    (t: number) => {
+      emitPlayback({ state: "playing", time: t });
+    },
+    [emitPlayback],
+  );
+
+  const handlePlayerBufferLag = useCallback(() => {
+    requestFreshSnapshot();
+  }, [requestFreshSnapshot]);
+
+  const handlePlayerReady = useCallback(() => {
+    if (
+      pendingSyncRef.current &&
+      !queueLoading &&
+      playerHandleRef.current?.isReady()
+    ) {
+      applySync(pendingSyncRef.current);
+      pendingSyncRef.current = null;
+    }
+  }, [applySync, queueLoading]);
+
+  const handlePlayerFirstPlay = useCallback(() => {
+    setPlayerReady(true);
+  }, []);
+
+  const currentUserIdForRoom = user?.userId ?? null;
+  const roomCreatedByForRoom = room?.createdBy ?? null;
+
+  const watchPlayerSlot = useMemo(
+    () => (
+      <div className="relative min-h-0 w-full">
+        <RoomYouTubePlayerWithInteractivePolicy
+          ref={playerHandleRef}
+          roomId={roomId}
+          currentUserId={currentUserIdForRoom}
+          roomCreatedBy={roomCreatedByForRoom}
+          phase={phase}
+          playlist={playlist}
+          currentIndex={currentIndex}
+          onAdvance={handleAdvance}
+          onPlayStateChange={handlePlayerPlayStateChange}
+          onSeek={handlePlayerSeek}
+          onBufferLag={handlePlayerBufferLag}
+          onReady={handlePlayerReady}
+          onFirstPlay={handlePlayerFirstPlay}
+        />
+        <MomentReactionOverlay roomId={roomId} />
+      </div>
+    ),
+    [
+      roomId,
+      currentUserIdForRoom,
+      roomCreatedByForRoom,
+      phase,
+      playlist,
+      currentIndex,
+      handleAdvance,
+      handlePlayerPlayStateChange,
+      handlePlayerSeek,
+      handlePlayerBufferLag,
+      handlePlayerReady,
+      handlePlayerFirstPlay,
+    ],
+  );
+
+  const watchNowPlayingSlot = useMemo(
+    () => (
+      <RoomNowPlayingCard
+        roomId={roomId}
+        videoId={nowPlaying?.videoId ?? null}
+        addedByName={nowPlaying?.addedByName ?? null}
+      />
+    ),
+    [roomId, nowPlaying?.videoId, nowPlaying?.addedByName],
+  );
+
+  const watchQueueSlot = useMemo(
+    () => (
+      <RoomSidePanel
+        roomId={roomId}
+        past={past}
+        nowPlaying={nowPlaying}
+        cues={cues}
+        sessionStarted={sessionStarted}
+        phase={phase}
+        onJump={handleQueueJump}
+        canEdit={isElevated}
+        onLoopToggle={handleLoopToggle}
+        queueLoading={queueLoading}
+        currentUserId={currentUserIdForRoom}
+        roomCreatedBy={roomCreatedByForRoom}
+        onSendChat={handleSendChat}
+        onSendChatGif={handleSendChatGif}
+        onTypingChange={handleTypingChange}
+        className="min-h-0"
+      />
+    ),
+    [
+      roomId,
+      past,
+      nowPlaying,
+      cues,
+      sessionStarted,
+      phase,
+      handleQueueJump,
+      isElevated,
+      handleLoopToggle,
+      queueLoading,
+      currentUserIdForRoom,
+      roomCreatedByForRoom,
+      handleSendChat,
+      handleSendChatGif,
+      handleTypingChange,
+    ],
+  );
+
+  const watchBottomSlot = useMemo(
+    () => (
+      <RoomBroadcasterPanel
+        roomId={roomId}
+        canModerateBroadcasts={isElevated}
+        onApproveJoin={handleApproveJoin}
+        onRejectJoin={handleRejectJoin}
+        onApproveAdd={handleApproveAdd}
+        onRejectAdd={handleRejectAdd}
+      />
+    ),
+    [
+      roomId,
+      isElevated,
+      handleApproveJoin,
+      handleRejectJoin,
+      handleApproveAdd,
+      handleRejectAdd,
+    ],
   );
 
   const ambientVideoId =
@@ -1065,15 +1218,11 @@ export default function RoomPage() {
         <RoomPageHeader
           roomId={roomId}
           videoUrl={videoUrl}
-          onVideoUrlChange={(value) =>
-            getRoomStore(roomId).getState().setVideoUrl(value)
-          }
+          onVideoUrlChange={handleVideoUrlChange}
           onAddVideo={handleAddVideo}
           onSearchPick={handleSearchPick}
           isOwner={isElevated}
           isRoomCreator={isOwner}
-          settings={settings}
-          onSettingsUpdated={setSettings}
           currentUserId={user?.userId ?? null}
           onKillRoom={isOwner ? handleKillRoom : undefined}
           onLeaveRoom={!isOwner ? handleLeaveRoom : undefined}
@@ -1081,91 +1230,10 @@ export default function RoomPage() {
 
         <main className="relative z-10 flex min-h-0 flex-1 flex-col overflow-hidden">
           <RoomWatchLayout
-            player={
-              <div className="relative min-h-0 w-full">
-                <RoomYouTubePlayer
-                  ref={playerHandleRef}
-                  phase={phase}
-                  playlist={playlist}
-                  currentIndex={currentIndex}
-                  onAdvance={handleAdvance}
-                  interactive={canControlPlayback}
-                  onPlayStateChange={(s) =>
-                    emitPlayback({
-                      state: s,
-                      time: playerHandleRef.current?.getCurrentTime() ?? 0,
-                    })
-                  }
-                  onSeek={(t) =>
-                    emitPlayback({ state: "playing", time: t })
-                  }
-                  onBufferLag={() => requestFreshSnapshot()}
-                  onReady={() => {
-                    // Drain any cross-user `playback.update` that arrived
-                    // mid-load (different user scrubbed while we were
-                    // mounting). The new snapshot path uses onFirstPlay
-                    // (below) instead, but real updates can still land
-                    // here.
-                    if (
-                      pendingSyncRef.current &&
-                      !queueLoading &&
-                      playerHandleRef.current?.isReady()
-                    ) {
-                      applySync(pendingSyncRef.current);
-                      pendingSyncRef.current = null;
-                    }
-                  }}
-                  onFirstPlay={() => {
-                    // Gate the snapshot request on "video is actually
-                    // playing" — NOT just "iframe is ready". seekTo /
-                    // loadPlaylist applied during YT's autoplay startup
-                    // (the window between onReady and first PLAYING) are
-                    // race-prone; PLAYING means YT is past that and
-                    // commands land deterministically.
-                    setPlayerReady(true);
-                  }}
-                />
-                <MomentReactionOverlay roomId={roomId} />
-              </div>
-            }
-            nowPlaying={
-              <RoomNowPlayingCard
-                roomId={roomId}
-                videoId={nowPlaying?.videoId ?? null}
-                addedByName={nowPlaying?.addedByName ?? null}
-              />
-            }
-            queue={
-              <RoomSidePanel
-                roomId={roomId}
-                past={past}
-                nowPlaying={nowPlaying}
-                cues={cues}
-                sessionStarted={sessionStarted}
-                phase={phase}
-                onJump={handleQueueJump}
-                canEdit={isElevated}
-                canControlPlayback={canControlPlayback}
-                onLoopToggle={handleLoopToggle}
-                queueLoading={queueLoading}
-                currentUserId={user?.userId ?? null}
-                canSendChat={canSendChat}
-                onSendChat={handleSendChat}
-                onSendChatGif={handleSendChatGif}
-                onTypingChange={handleTypingChange}
-                className="min-h-0"
-              />
-            }
-            bottomPanel={
-              <RoomBroadcasterPanel
-                roomId={roomId}
-                isOwner={isElevated}
-                onApproveJoin={handleApproveJoin}
-                onRejectJoin={handleRejectJoin}
-                onApproveAdd={handleApproveAdd}
-                onRejectAdd={handleRejectAdd}
-              />
-            }
+            player={watchPlayerSlot}
+            nowPlaying={watchNowPlayingSlot}
+            queue={watchQueueSlot}
+            bottomPanel={watchBottomSlot}
           />
         </main>
       </div>

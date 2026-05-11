@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import { useShallow } from "zustand/react/shallow";
 import { HEADER_CLUSTER_CIRCLE_LAYOUT } from "@/components/client/home/headerClusterStyles";
+import { getRoomStore, useRoomStore } from "@/components/client/room/store/roomStore";
 import { AppIcon } from "@/components/icons/AppIcon";
 import {
   type RoomSettingsDetail,
@@ -12,20 +14,12 @@ import {
 
 type RoomSettingsControlProps = {
   roomId: string;
-  settings: RoomSettingsDetail;
-  /**
-   * Called after a successful PATCH so the parent can hold the new
-   * settings value (server-truth, may differ from what the client
-   * optimistically toggled to).
-   */
-  onUpdated: (settings: RoomSettingsDetail) => void;
 };
 
 /**
- * Circular gear button + popover panel of room settings. Visibility of
- * this whole component is gated upstream (rendered only when the
- * requester is the room creator), so all visible rows assume edit
- * permission and fire PATCH on toggle.
+ * Circular gear button + popover panel of room settings. Visibility is
+ * gated upstream (elevated members: creator or co-owner). All visible
+ * rows assume edit permission and fire PATCH on toggle.
  *
  * Each toggle uses an optimistic update — flips the row immediately,
  * then PATCHes; on failure it reverts and toasts the error. The panel
@@ -36,13 +30,24 @@ type RoomSettingsControlProps = {
  * so it doesn't overflow the viewport. Closes on click-outside,
  * Escape, or a second click on the trigger.
  */
-export function RoomSettingsControl({
-  roomId,
-  settings,
-  onUpdated,
-}: RoomSettingsControlProps) {
+export function RoomSettingsControl({ roomId }: RoomSettingsControlProps) {
+  /** Popover rows only — avoids rerenders when unrelated settings (e.g. loop) change. */
+  const panel = useRoomStore(
+    roomId,
+    useShallow((s) => {
+      const rs = s.roomSettings;
+      if (!rs) return null;
+      return {
+        nature: rs.nature,
+        chatRights: rs.chatRights,
+        videoAudioRights: rs.videoAudioRights,
+      };
+    }),
+  );
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  if (!panel) return null;
 
   useEffect(() => {
     if (!open) return;
@@ -66,42 +71,45 @@ export function RoomSettingsControl({
   async function applyPatch(patch: UpdateRoomSettingsArgs, prev: RoomSettingsDetail) {
     const result = await updateRoomSettings(roomId, patch);
     if (!result.ok) {
-      // Revert by handing the parent back the pre-toggle settings.
-      onUpdated(prev);
+      // Revert to pre-toggle server snapshot on failure.
+      getRoomStore(roomId).getState().setRoomSettings(prev);
       toast.error(result.error);
       return;
     }
-    // Reconcile to whatever the server returned (in case of normalization).
-    onUpdated(result.settings);
+    // Reconcile to server truth (also mirrored by WS `room.settings.updated`).
+    getRoomStore(roomId).getState().setRoomSettings(result.settings);
   }
 
   function toggleNature(nextOn: boolean) {
-    const prev = settings;
+    const prev = getRoomStore(roomId).getState().roomSettings;
+    if (!prev) return;
     const next: RoomSettingsDetail = {
-      ...settings,
+      ...prev,
       nature: nextOn ? "PRIVATE" : "PUBLIC",
     };
-    onUpdated(next);
+    getRoomStore(roomId).getState().setRoomSettings(next);
     void applyPatch({ nature: next.nature }, prev);
   }
 
   function toggleChatRights(nextOn: boolean) {
-    const prev = settings;
+    const prev = getRoomStore(roomId).getState().roomSettings;
+    if (!prev) return;
     const next: RoomSettingsDetail = {
-      ...settings,
+      ...prev,
       chatRights: nextOn ? "LIMITED" : "ALL",
     };
-    onUpdated(next);
+    getRoomStore(roomId).getState().setRoomSettings(next);
     void applyPatch({ chatRights: next.chatRights }, prev);
   }
 
   function toggleVideoAudioRights(nextOn: boolean) {
-    const prev = settings;
+    const prev = getRoomStore(roomId).getState().roomSettings;
+    if (!prev) return;
     const next: RoomSettingsDetail = {
-      ...settings,
+      ...prev,
       videoAudioRights: nextOn ? "LIMITED" : "ALL",
     };
-    onUpdated(next);
+    getRoomStore(roomId).getState().setRoomSettings(next);
     void applyPatch({ videoAudioRights: next.videoAudioRights }, prev);
   }
 
@@ -136,19 +144,19 @@ export function RoomSettingsControl({
             <LabeledToggle
               label="Private room"
               hint="Only invited members can join"
-              on={settings.nature === "PRIVATE"}
+              on={panel.nature === "PRIVATE"}
               onChange={toggleNature}
             />
             <LabeledToggle
               label="Restricted chat"
               hint="Only leaders can send messages"
-              on={settings.chatRights === "LIMITED"}
+              on={panel.chatRights === "LIMITED"}
               onChange={toggleChatRights}
             />
             <LabeledToggle
               label="Restricted audio/video"
               hint="Only leaders can speak / share video"
-              on={settings.videoAudioRights === "LIMITED"}
+              on={panel.videoAudioRights === "LIMITED"}
               onChange={toggleVideoAudioRights}
             />
           </div>
@@ -186,7 +194,7 @@ function LabeledToggle({ label, hint, on, onChange }: LabeledToggleProps) {
         className={[
           "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40",
           on
-            ? "border-blue-600 bg-gradient-to-b from-sky-500 via-blue-600 to-indigo-700"
+            ? "border-blue-600 bg-linear-to-b from-sky-500 via-blue-600 to-indigo-700"
             : "border-border bg-muted/40",
         ].join(" ")}
       >

@@ -14,9 +14,10 @@
  *  - **Public room.** Upsert as `VIEWER`, broadcast `room.member.joined`,
  *    return `joined`.
  *  - **Private room.** Add a join request to the in-memory store and
- *    push it to the leader's personal WS channel; return `pending`. The
- *    requester's UI shows a "waiting for the host" overlay until the
- *    leader resolves it (handled by the WS layer, not this handler).
+ *    push it to each moderator's personal WS channel (room creator +
+ *    co-owners); return `pending`. The requester's UI shows a "waiting
+ *    for the host" overlay until a moderator resolves it (handled by the
+ *    WS layer, not this handler).
  *
  * Response:
  *   200 { ok: true, status: "joined" | "already-member" }
@@ -28,6 +29,7 @@
  */
 import type { Request, Response } from "express";
 import { prisma } from "../db";
+import { listElevatedModeratorUserIds } from "./roleAuth";
 import { addRequest } from "../ws/joinRequests";
 import { getIo } from "../ws";
 
@@ -91,16 +93,19 @@ export async function joinRoomHandler(req: Request, res: Response) {
       return res.status(200).json({ ok: true, status: "joined" });
     }
 
-    // Private — queue a request for the leader.
+    // Private — queue a request for moderators (creator + co-owners).
     const request = addRequest(roomId, { userId, username });
+    const moderatorIds = await listElevatedModeratorUserIds(roomId);
     console.log(
-      `[rooms/join] PRIVATE request created: roomId=${roomId} requestId=${request.id} from=${userId}(${username}) → leader=${room.createdBy} ioAttached=${Boolean(io)}`,
+      `[rooms/join] PRIVATE request created: roomId=${roomId} requestId=${request.id} from=${userId}(${username}) → moderators=${moderatorIds.join(",")} ioAttached=${Boolean(io)}`,
     );
-    io?.to(`user:${room.createdBy}`).emit("room.request.created", {
-      request,
-    });
-    // Also broadcast on the room channel so the leader's other tabs
-    // (and any future co-leaders) see it without a re-subscribe.
+    const createdPayload = { request };
+    for (const modId of moderatorIds) {
+      io?.to(`user:${modId}`).emit("room.request.created", createdPayload);
+    }
+    // Also broadcast on the room channel so connected members in the
+    // room (including moderators' other tabs) see it without relying
+    // on the personal-channel fan-out alone.
     io?.to(`room:${roomId}`).emit("room.request.created", { request });
 
     return res
